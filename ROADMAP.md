@@ -99,9 +99,11 @@ Other findings worth acting on:
   archives live in OneDrive as placeholders. Deleting them frees cloud quota,
   not local space.
 - **`$Recycle.Bin` holds 3.7 GB** in 44 files. Free, zero-risk.
-- **15.7 GB in 8 files not read in 2+ years**, almost all Android emulator
-  images: `.android\avd` (7.8 GB total subtree), the `android-34` system image,
-  and a stale Google Play Games AVD.
+- **~143 GB in files over 500 MB not modified in 2+ years.** The first version of
+  this line read "15.7 GB in 8 files", measured on access time, and was wrong by
+  roughly tenfold - see the Phase 2 correction below. Among them the Android
+  emulator images: `.android\avd` (7.8 GB subtree), the `android-34` system
+  image, and a stale Google Play Games AVD.
 - `AvidDownloads`, `SoftwareTorrent`, `Documents`, `inetpub` and
   `Documents and Settings` are all empty or junctions - 0 files between them.
 - `Documentos\StarCraft II` is confirmed genuinely empty: 0 files, 0 subdirs,
@@ -114,30 +116,65 @@ Other findings worth acting on:
 
 - **`C:\Windows` at 45.6 GB is overstated.** `WinSxS` is largely hard links into
   `System32`, counted once per name. Not reclaimable by deleting files.
-- Last-access times are trustworthy here only because this machine has
-  `DisableLastAccess = 2`. Granularity is about an hour.
-- Reading a directory updates its access time, so the scan itself refreshes
-  `atime` on directories. File `atime` is untouched, which is what the staleness
-  analysis uses.
+- **Last-access times are not usable on this machine**, despite being recorded.
+  Corrected during Phase 2; see below. Staleness is judged on modification time.
 
 ## Phase 2 - The viewer
 
-- [ ] Localhost server on a fixed port, serving the snapshot from SQLite as JSON
-- [ ] **By folder**: sortable table with drill-down, biggest child first, showing both size and file count
-- [ ] **By file type**: extension groups (video, audio, installers, archives, images, code, ...) with totals
-- [ ] **By age**: buckets on last-modified and last-accessed - "not touched in 5+ years and over 100 MB" is the view that finds the easy wins
-- [ ] **Biggest single files** list
-- [ ] Cloud-only vs on-disk shown distinctly everywhere, so you never plan a cleanup around bytes that were never there
-- [ ] Open-in-Explorer link per row, so a decision is one click from the actual folder
-- [ ] A visible note of which snapshot is loaded and when it was taken
-- [ ] Serve pages as UTF-8. Paths like `Imágenes\Álbum de cámara` are stored correctly but the Windows console renders them as mojibake; the browser must not repeat that
-- [ ] **A video view of its own.** Video is 59% of the used space, so it earns a dedicated screen - every file over ~1 GB with its folder, size, and last-read date, orderable, ticked off as keep / move / delete
+Delivered as `app.py` plus `web/`. `python app.py` serves
+`http://127.0.0.1:8770`.
+
+- [x] Localhost server on a fixed port, serving the snapshot from SQLite as JSON
+- [x] **By folder**: sortable table with drill-down and breadcrumbs, biggest child first, showing size on disk, logical size and file count
+- [x] **By file type**: groups and top-60 extensions, with each group's share of the disk
+- [x] **By age**: buckets on modified and accessed, side by side
+- [x] **Biggest single files**, filterable by group, minimum size, and how long since it was touched
+- [x] Cloud-only vs on-disk shown distinctly everywhere, so you never plan a cleanup around bytes that were never there
+- [x] Open-in-Explorer link per row, so a decision is one click from the actual folder
+- [x] A visible note of which snapshot is loaded and when it was taken, plus a drive-usage bar showing measured / unaccounted / free
+- [x] Serve pages as UTF-8, so `Imágenes\Álbum de cámara` renders properly in the browser even though the console mangles it
+- [x] **A video view of its own**, since video is 59% of the used space: folders holding local video, and every local video file over 700 MB
+- [x] Name search across folders and files
+- [x] Empty-folder list, carried forward from the Phase 1 findings
+- [x] Annotate `node_modules`, `__pycache__`, caches and similar as regenerable, and mark junctions so their zero size is not mistaken for a bug
+- [x] Verify the views agree with the snapshot: age buckets and type groups each sum to exactly 773.9 GB and 956,012 files, so no rows are lost in grouping
+- [ ] Treemap or similar graphical view. Deferred - the bar-in-cell tables answer "what is big here" well enough that a treemap is decoration until proven otherwise
+
+### The correction Phase 2 forced
+
+**Phase 1 claimed last-access times were trustworthy on this machine. That was
+wrong, and the Age tab now says so on screen.**
+
+`DisableLastAccess = 2` means Windows records access times, which is what that
+claim rested on. But it records reads by *any* process, and antivirus, the search
+indexer and backup all sweep the whole volume. The evidence, which
+`Store._atime_health` recomputes rather than leaving as a footnote:
+
+- 253,215 files (182.7 GB) were "read" within six months despite not being
+  modified for over two years.
+- Access stamps cluster on a few calendar days instead of spreading out. One day
+  accounts for **24% of all files**; six unrelated films all read "7 days ago"
+  while their contents were last modified 193 to 603 days ago.
+
+So the tool judges staleness by modification time, with access time shown dimmed
+for comparison only. The difference is not cosmetic: files over 500 MB untouched
+for two years are **143.3 GB by modification time against 15.4 GB by access
+time**, a tenfold undercount. The Phase 1 finding of "15.7 GB stale" was a
+symptom of the same error and has been corrected above.
+
+### Performance notes
+
+Whole-table aggregates are computed once at startup (~20 s) and cached, since a
+snapshot is immutable once complete. Before that, the Age tab took 25 s per click
+because it ran one full scan of 956k rows per bucket; it is now a single scan per
+timestamp column. Every view responds in under 30 ms apart from name search at
+about 1.1 s, which is a substring `LIKE` and cannot use an index.
 
 ## Phase 3 - Analysis passes
 
 Read-only. Produces ranked candidate lists, deletes nothing.
 
-- [ ] **Stale and large**: not accessed in N years, over a size threshold, ranked by GB
+- [ ] **Stale and large**: not *modified* in N years, over a size threshold, ranked by GB. Not accessed - see the Phase 2 correction
 - [ ] **Regenerable junk**: `node_modules`, `.venv`, `__pycache__`, build outputs, browser and app caches, `Temp`, Windows Update leftovers, old restore points - grouped by how safely they come back
 - [ ] **Finished downloads and installers**: `.iso`, `.msi`, `.exe` installers, archives in `Downloads` / `SoftwareTorrent` / `AvidDownloads`
 - [ ] **Duplicates**: group by size, then partial hash, then full hash. Report only proven byte-identical sets, with all copies' paths so you pick which to keep

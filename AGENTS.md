@@ -42,9 +42,8 @@ use `;`.
   `C:\Users\andry\OneDrive\Documentos\_Personal\Clases canto\Tools`. Never
   touch `atmosphere`, `switch`, `Nintendo`, `emuMMC`, `bootloader`, `games`.
 - **`DisableLastAccess = 2`** (System Managed, updates enabled), so `atime` is
-  meaningful on this machine. Granularity is about an hour. Do not assume this
-  holds on other machines - it is off by default in many configurations, and
-  every "not accessed in N years" conclusion depends on it.
+  *recorded* - but see trap 9: it is recorded for every process, not just the
+  user, and is useless for staleness here. **Use `mtime`.**
 - **WSL Ubuntu 2 exists but is the wrong tool.** It reaches `C:` only through
   `/mnt/c`, which is roughly an order of magnitude slower and cannot read
   OneDrive placeholder state. Use native Windows Python.
@@ -82,6 +81,20 @@ use `;`.
    `Álbum de cámara` print as `Im?genes`. The stored strings are correct -
    `os.path.isdir` on them succeeds. Do not "fix" an encoding bug that is only
    in the terminal; print `ascii(path)` to check.
+9. **Last-access time is not evidence of use, even with recording enabled.**
+   This was asserted in the first pass here and was wrong. Windows updates
+   `atime` for reads by *any* process, and antivirus, the search indexer and
+   backup all sweep the whole volume. On this machine 253,215 files (182.7 GB)
+   were "read" within six months despite not being modified for over two years,
+   and one single calendar day accounts for 24% of all access stamps. A person
+   does not read a quarter of a disk in a day.
+
+   Consequence: `mtime` is the staleness signal, and the difference is not
+   marginal. Files over 500 MB untouched for two years are 143.3 GB by `mtime`
+   and 15.4 GB by `atime` - a tenfold undercount. `Store._atime_health` computes
+   this and the Age tab shows it, so the claim stays checkable instead of
+   becoming folklore. Re-derive it before trusting `atime` on any other machine;
+   the reverse error, assuming `atime` is always useless, is just as wrong.
 
 ## Running things
 
@@ -104,3 +117,16 @@ python scan.py --verify
 
 A full `C:` walk is about 10 minutes for ~956k files; the rollup is 8 seconds.
 If the rollup is not nearly instant, an index is missing - see trap 7.
+
+The viewer:
+
+```
+python app.py                       http://127.0.0.1:8770
+python app.py --port 9000 --no-browser
+```
+
+Loopback only, by design: the snapshot maps the whole filesystem. Whole-table
+aggregates are precomputed at startup (about 20 s) and cached for the life of
+the process, because a snapshot never changes once complete. Without that cache
+the Age tab cost 25 s per click. If a new view needs a full-table aggregate,
+add it to `Store.warm` rather than computing it per request.

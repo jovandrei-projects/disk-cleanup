@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Disk cleanup</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="titlerow">
+    <h1>Disk cleanup</h1>
+    <span class="meta" id="snapmeta">loading snapshot...</span>
+    <span style="flex:1"></span>
+    <input id="search" type="search" placeholder="search names (2+ chars)" autocomplete="off">
+  </div>
+  <div class="usage">
+    <div class="usagebar" id="usagebar"></div>
+    <div class="legend" id="usagelegend"></div>
+  </div>
+  <nav id="tabs"></nav>
+</header>
+
+<main id="view"><div class="loading">loading...</div></main>
+
+<script src="/app.js"></script>
+</body>
+</html>
