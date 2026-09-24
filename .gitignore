@@ -1,0 +1,10 @@
+# The scan database is a complete map of the filesystem, including every
+# filename. It never goes into source control.
+data/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+reports/
+__pycache__/
+*.pyc
