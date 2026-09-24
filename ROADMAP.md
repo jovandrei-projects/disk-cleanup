@@ -138,6 +138,7 @@ Delivered as `app.py` plus `web/`. `python app.py` serves
 - [x] Empty-folder list, carried forward from the Phase 1 findings
 - [x] Annotate `node_modules`, `__pycache__`, caches and similar as regenerable, and mark junctions so their zero size is not mistaken for a bug
 - [x] Verify the views agree with the snapshot: age buckets and type groups each sum to exactly 773.9 GB and 956,012 files, so no rows are lost in grouping
+- [x] `test_render.js`, which renders every view against a running server and inspects the output. Added after a mismatched quote shipped a blank page with all API tests green - checking the endpoints was never a check on the app
 - [ ] Treemap or similar graphical view. Deferred - the bar-in-cell tables answer "what is big here" well enough that a treemap is decoration until proven otherwise
 
 ### The correction Phase 2 forced

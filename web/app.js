@@ -296,7 +296,7 @@ async function renderBiggest() {
       '<td class="num dim">' + a.text + "</td>" +
       '<td class="num">' + esc(f.grp || "other") + "</td>" +
       "<td>" + revealBtn(f.dir_path + "\\" + f.name) +
-        '<a href="#" data-dir="' + f.dir_id + '" title="open folder">&#8599;</a></td></tr>";
+        '<a href="#" data-dir="' + f.dir_id + '" title="open folder">&#8599;</a></td></tr>';
   }).join("");
 
   view.innerHTML =

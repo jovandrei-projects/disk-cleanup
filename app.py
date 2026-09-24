@@ -347,6 +347,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/" or u.path == "/index.html":
                 return self.send_file("index.html")
+            if u.path == "/favicon.ico":
+                # No icon, but a 404 here looks like a real error in the console.
+                self.send_response(204)
+                self.end_headers()
+                return
             if not u.path.startswith("/api/"):
                 return self.send_file(u.path)
 

@@ -130,3 +130,19 @@ aggregates are precomputed at startup (about 20 s) and cached for the life of
 the process, because a snapshot never changes once complete. Without that cache
 the Age tab cost 25 s per click. If a new view needs a full-table aggregate,
 add it to `Store.warm` rather than computing it per request.
+
+## Verifying a change
+
+Run all three. The first two are instant and catch most of it:
+
+```
+node --check web/app.js                 syntax
+python -m py_compile app.py scan.py     syntax
+node test_render.js                     every view, against a running app.py
+```
+
+`test_render.js` loads `web/app.js` in a VM with a stubbed DOM, points `fetch`
+at the live server, renders each view and inspects the HTML. **It exists because
+a mismatched quote once shipped a blank page while every JSON endpoint passed
+its own tests.** Testing the API is not testing the app; if you add a view, add
+it to the `cases` list there.
