@@ -297,11 +297,18 @@ class Scanner:
         self.n_dirs += 1
         return cur.lastrowid
 
-    def run(self, snapshot_id):
+    def run(self, snapshot_id, graft_parent=None, graft_depth=0):
+        """Walk self.root into the snapshot.
+
+        `graft_*` is for refreshes: instead of hanging the new tree off nothing,
+        the refreshed subtree's root is attached beneath an existing directory
+        copied from the previous snapshot.
+        """
         self.snapshot_id = snapshot_id
-        root_id = self.insert_dir(None, self.root, 0, FILE_ATTRIBUTE_DIRECTORY, 0)
+        root_id = self.insert_dir(graft_parent, self.root, graft_depth,
+                                  FILE_ATTRIBUTE_DIRECTORY, 0)
         # Explicit stack: some of these trees are deep enough to blow recursion.
-        stack = [(self.root, root_id, 0)]
+        stack = [(self.root, root_id, graft_depth)]
         while stack:
             path, dir_id, depth = stack.pop()
             self.walk_one(path, dir_id, depth, stack)
@@ -457,6 +464,24 @@ def connect(db_path):
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=OFF")
     db.executescript(SCHEMA)
+    # Refresh provenance. Older databases lack these columns; add rather than
+    # migrate, so every snapshot that already exists keeps working.
+    cols = {r[1] for r in db.execute("PRAGMA table_info(snapshots)")}
+    for col in ("refresh_of INTEGER", "refresh_path TEXT"):
+        name = col.split()[0]
+        if name not in cols:
+            db.execute("ALTER TABLE snapshots ADD COLUMN " + col)
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS decisions (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            choice TEXT NOT NULL,
+            decided_at REAL NOT NULL,
+            note TEXT
+        );
+        """
+    )
     return db
 
 
@@ -539,6 +564,175 @@ def cmd_finish(args):
     return cmd_verify(args, db, sid)
 
 
+def normpath(p):
+    return os.path.normpath(p).rstrip("\\").lower()
+
+
+def cmd_refresh(args):
+    """Rescan one subtree into a NEW snapshot.
+
+    Copies everything outside the refreshed path from the previous snapshot,
+    re-walks the path itself, then rolls up. The old snapshot is left intact, so
+    a refresh is diffable and a delete is verifiable: if the folder no longer
+    exists on disk, it should simply not appear in the new snapshot.
+    """
+    db = connect(args.db)
+    base_row = db.execute(
+        "SELECT MAX(id), root FROM snapshots WHERE complete=1").fetchone()
+    base, base_root = base_row
+    if base is None:
+        print("no complete snapshot to refresh; run a full scan first")
+        return 1
+    target = normpath(args.refresh)
+    if not target.startswith(normpath(base_root)):
+        print("%s is not under this scan's root (%s)" % (args.refresh, base_root))
+        return 1
+
+    # Locate the refresh point in the old snapshot. If the target itself was
+    # never scanned (e.g. it is newly created) or no longer exists (deleted),
+    # climb to the nearest ancestor that the old snapshot knows about.
+    by_path = {normpath(r[1]): r for r in db.execute(
+        "SELECT id, path, depth, parent_id FROM dirs WHERE snapshot_id=?", (base,))}
+    want = target
+    want_deleted = not os.path.isdir(win(target))
+    probe = want
+    while probe is not None:
+        row = by_path.get(probe)
+        if row:
+            break
+        parent = os.path.dirname(probe)
+        probe = normpath(parent) if normpath(parent) != probe else None
+    if row is None:
+        print("no part of %s is in snapshot %d" % (args.refresh, base))
+        return 1
+    target_id, target_path, target_depth, target_parent = row
+    if want_deleted and normpath(target_path) == want:
+        # The target is still recorded in the old snapshot but gone from disk:
+        # refresh its parent so the removal shows up.
+        parent = by_path.get(normpath(os.path.dirname(target_path)))
+        if parent is None:
+            print("cannot refresh a deleted root")
+            return 1
+        target_id, target_path, target_depth, target_parent = parent
+        print("%s is gone from disk; refreshing its parent %s"
+              % (args.refresh, target_path))
+    elif normpath(target_path) != want:
+        why = "it was deleted" if want_deleted else "it was never scanned"
+        print("%s not in snapshot because %s; refreshing nearest ancestor %s"
+              % (args.refresh, why, target_path))
+
+    subtree = {r[0] for r in db.execute(
+        """WITH RECURSIVE s(i) AS (
+             SELECT id FROM dirs WHERE id=?
+             UNION ALL SELECT d.id FROM dirs d JOIN s ON d.parent_id=s.i)
+           SELECT i FROM s""", (target_id,))}
+
+    total, free, cluster = volume_info(os.path.splitdrive(base_root)[0] + "\\")
+    new_sid = db.execute(
+        "INSERT INTO snapshots (root, started_at, elevated, cluster_bytes,"
+        " volume_total_bytes, volume_free_bytes, refresh_of, refresh_path)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (base_root, time.time(), int(is_elevated()), cluster, total, free,
+         base, target_path)).lastrowid
+
+    print("snapshot %d: refresh of %s, based on snapshot %d" % (new_sid, target_path, base))
+    print("copying rows outside the subtree...", flush=True)
+    t0 = time.time()
+
+    # Copy dirs outside the subtree with fresh ids, remapping parent_id through
+    # idmap. Rows are processed parents-first (ordered by depth), and the next
+    # rowid is predictable because this connection is the only writer - so the
+    # map old->new is built BEFORE inserting and parent links survive the copy.
+    # Building the map afterwards, as a first version did, left every copied row
+    # orphaned: parent_id=None, which is exactly the kind of wrongness the
+    # rollup invariant check exists to catch.
+    rows = db.execute(
+        "SELECT id, parent_id, path, name, depth, attrs, reparse_tag, own_files,"
+        " own_bytes_logical, own_bytes_disk, newest_mtime, newest_atime"
+        " FROM dirs WHERE snapshot_id=? ORDER BY depth", (base,)).fetchall()
+    first_new = (db.execute("SELECT MAX(id) FROM dirs").fetchone()[0] or 0) + 1
+    idmap = {}
+    batch = []
+    i = 0
+    for r in rows:
+        if r[0] in subtree:
+            continue
+        idmap[r[0]] = first_new + i
+        i += 1
+        batch.append((new_sid, idmap.get(r[1])) + r[2:])
+    db.executemany(
+        "INSERT INTO dirs (snapshot_id, parent_id, path, name, depth, attrs,"
+        " reparse_tag, own_files, own_bytes_logical, own_bytes_disk,"
+        " newest_mtime, newest_atime) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", batch)
+    copied = db.execute("SELECT COUNT(*) FROM dirs WHERE snapshot_id=?",
+                        (new_sid,)).fetchone()[0]
+    if copied != i:
+        print("copy produced %d rows for %d expected - aborting" % (copied, i))
+        return 1
+    # Defensive: the assigned ids must actually be the contiguous range we
+    # mapped to. If rowid allocation ever changes, fail loudly rather than ship
+    # a corrupt tree.
+    rmin, rmax = db.execute(
+        "SELECT MIN(id), MAX(id) FROM dirs WHERE snapshot_id=?",
+        (new_sid,)).fetchone()
+    if rmin != first_new or rmax != first_new + i - 1:
+        print("assigned ids are not the contiguous range assumed - aborting")
+        return 1
+
+    db.execute("CREATE TEMP TABLE idmap(old_id INTEGER PRIMARY KEY, new_id INTEGER)")
+    db.executemany("INSERT INTO idmap VALUES (?,?)", idmap.items())
+    db.execute(
+        """INSERT INTO files (snapshot_id, dir_id, name, ext, grp, bytes_logical,
+             bytes_disk, mtime, atime, ctime, attrs, cloud_only)
+           SELECT ?, m.new_id, f.name, f.ext, f.grp, f.bytes_logical, f.bytes_disk,
+                  f.mtime, f.atime, f.ctime, f.attrs, f.cloud_only
+           FROM files f JOIN idmap m ON m.old_id = f.dir_id
+           WHERE f.snapshot_id=?""", (new_sid, base))
+
+    # Error rows belong to their snapshot by path, not by id; copy the ones that
+    # lie outside the refreshed subtree.
+    prefix = normpath(target_path) + "\\"
+    db.executemany(
+        "INSERT INTO errors (snapshot_id, path, kind, message) VALUES (?,?,?,?)",
+        [(new_sid, p, k, m) for p, k, m in db.execute(
+            "SELECT path, kind, message FROM errors WHERE snapshot_id=?", (base,))
+         if normpath(p) != normpath(target_path)
+         and not normpath(p).startswith(prefix)])
+    db.commit()
+    print("  copied in %.0f s" % (time.time() - t0), flush=True)
+
+    if os.path.isdir(win(target_path)):
+        sc = Scanner(db, target_path, cluster, quiet=args.quiet)
+        sc.run(new_sid, graft_parent=idmap.get(target_parent), graft_depth=target_depth)
+    else:
+        # The whole refresh target is gone; nothing to re-walk. That is the
+        # expected path when verifying a deletion.
+        if normpath(target_path) == want:
+            print("%s is gone; nothing to re-walk" % target_path)
+
+    finalize(db, new_sid)
+    print("")
+    rc = cmd_verify(args, db, new_sid)
+
+    # If the user asked to refresh a path they had deleted, confirm it is gone.
+    if want_deleted or normpath(target_path) != want:
+        still = db.execute(
+            "SELECT COUNT(*) FROM dirs WHERE snapshot_id=? AND lower(path)=?",
+            (new_sid, want)).fetchone()[0]
+        fstill = db.execute(
+            "SELECT COUNT(*) FROM files f JOIN dirs d ON d.id=f.dir_id"
+            " WHERE f.snapshot_id=? AND lower(d.path || '\\' || f.name)=?",
+            (new_sid, want)).fetchone()[0]
+        if still or fstill:
+            print("")
+            print("WARNING: %s still appears in the new snapshot (%d dirs, %d files)"
+                  % (args.refresh, still, fstill))
+        else:
+            print("")
+            print("confirmed: %s is no longer on disk" % args.refresh)
+    return rc
+
+
 def cmd_verify(args, db=None, snapshot_id=None):
     db = db or connect(args.db)
     if snapshot_id is None:
@@ -612,6 +806,14 @@ def cmd_verify(args, db=None, snapshot_id=None):
         for label, got, want in bad:
             print("   %-14s rollup says %d, files table says %d (%+d)"
                   % (label, got, want, got - want))
+    # Every non-root row must point at a parent inside the same snapshot. A
+    # refresh that mangles parent links passes every size check and still means
+    # the whole tree is silently detached.
+    orphans = db.execute(
+        "SELECT COUNT(*) FROM dirs c WHERE c.snapshot_id=? AND c.parent_id IS NOT NULL"
+        " AND c.parent_id NOT IN (SELECT id FROM dirs WHERE snapshot_id=?)",
+        (snapshot_id, snapshot_id)).fetchone()[0]
+    print("parent links intact: %s" % ("OK" if orphans == 0 else "FAILED - %d orphans" % orphans))
     print("")
     print("largest top-level directories (on disk):")
     for path, disk, logical, files in db.execute(
@@ -645,11 +847,16 @@ def main():
     p.add_argument("--list-snapshots", action="store_true")
     p.add_argument("--finish", type=int, metavar="ID",
                    help="index and roll up an already-walked snapshot")
+    p.add_argument("--refresh", metavar="PATH",
+                   help="rescan one subtree into a new snapshot; use to verify "
+                        "a deletion or pick up local changes without re-walking C:\\")
     args = p.parse_args()
     if args.list_snapshots:
         return cmd_list(args)
     if args.finish:
         return cmd_finish(args)
+    if args.refresh:
+        return cmd_refresh(args)
     if args.verify:
         return cmd_verify(args)
     return cmd_scan(args)

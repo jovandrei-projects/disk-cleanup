@@ -22,6 +22,8 @@ import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+from analyze import candidates as compute_candidates
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
 DB_DEFAULT = os.path.join(HERE, "data", "inventory.sqlite3")
@@ -62,6 +64,13 @@ class Store:
             sys.exit("no complete snapshot in %s - finish a scan first" % path)
         self.snap = dict(row)
         self.sid = self.snap["id"]
+        # The user's keep/delete marks live in the same database and survive
+        # rescans because they are keyed on path, not on a snapshot's row id.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS decisions ("
+            " id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+            " choice TEXT NOT NULL, decided_at REAL NOT NULL, note TEXT)")
+        self.conn.commit()
         # A snapshot never changes once complete, so whole-table aggregates are
         # computed once and kept. Without this the Age tab re-scans 956k rows on
         # every click.
@@ -74,7 +83,8 @@ class Store:
 
     def warm(self):
         for key, fn in (("snapshot", self._snapshot), ("types", self._types),
-                        ("ages", self._ages)):
+                        ("ages", self._ages),
+                        ("candidates", lambda: self._candidates())):
             t = time.time()
             self.cached(key, fn)
             print("  %-10s %.1fs" % (key, time.time() - t), flush=True)
@@ -298,11 +308,35 @@ class Store:
             " ORDER BY f.bytes_disk DESC LIMIT ?", (self.sid, like, limit))
         return {"dirs": dirs, "files": files}
 
-    def empty_dirs(self, limit=300):
+    def _candidates(self):
+        data = compute_candidates(self.conn, self.sid)
+        marks = {r["path"]: r["choice"] for r in self.q(
+            "SELECT path, choice FROM decisions")}
+        for c in data["items"]:
+            c["decision"] = marks.get(c["path"])
+        return data
+
+    def decide(self, path, choice):
+        self.conn.execute(
+            "INSERT INTO decisions (path, choice, decided_at) VALUES (?,?,?)"
+            " ON CONFLICT(path) DO UPDATE SET choice=excluded.choice,"
+            " decided_at=excluded.decided_at",
+            (path, choice, time.time()))
+        self.conn.commit()
+        self._cache.pop("candidates", None)
+
+    def empty_dirs(self, limit=500):
+        # "Topmost" empty branches: the folder itself holds nothing anywhere
+        # beneath it, but its parent does. Filtering on parent keeps a folder
+        # full of empty folders as one entry per branch root instead of one per
+        # leaf, and reparse_tag=0 keeps junctions out - their zero count is a
+        # scanning artifact, not emptiness.
         return self.q(
-            "SELECT id, name, path, depth FROM dirs"
-            " WHERE snapshot_id=? AND total_files=0 AND total_dirs=0 AND depth>0"
-            " ORDER BY depth, path LIMIT ?", (self.sid, limit))
+            "SELECT c.id, c.name, c.path, c.depth FROM dirs c"
+            " JOIN dirs p ON p.id=c.parent_id"
+            " WHERE c.snapshot_id=? AND c.total_files=0 AND c.reparse_tag=0"
+            " AND c.depth>0 AND p.total_files>0"
+            " ORDER BY c.path LIMIT ?", (self.sid, limit))
 
 
 # ----------------------------------------------------------------------- server
@@ -382,10 +416,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(s.search(term))
             if u.path == "/api/empty":
                 return self.send_json({"dirs": s.empty_dirs()})
+            if u.path == "/api/candidates":
+                return self.send_json(s.cached("candidates", s._candidates))
+            if u.path == "/api/decisions":
+                return self.send_json({"decisions": s.q(
+                    "SELECT path, choice, decided_at FROM decisions")})
             if u.path == "/api/reveal":
                 return self.send_json(reveal(qs.get("path", "")))
             self.send_error(404)
         except Exception as exc:  # a broken query should not kill the server
+            self.send_json({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path != "/api/decide":
+            return self.send_error(404)
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n) or b"{}")
+            path = (body.get("path") or "").strip()
+            choice = (body.get("choice") or "").strip()
+            if not path or choice not in ("keep", "delete", "archive", "unsure"):
+                return self.send_json({"error": "bad decision"}, 400)
+            self.store.decide(path, choice)
+            self.send_json({"ok": True})
+        except Exception as exc:
             self.send_json({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
 
 

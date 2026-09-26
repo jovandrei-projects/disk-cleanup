@@ -61,6 +61,7 @@ let SORT = "size";
 const view = document.getElementById("view");
 
 const TABS = [
+  ["recommended", "Recommended"],
   ["folders", "Folders"],
   ["types", "File types"],
   ["age", "Age"],
@@ -402,6 +403,65 @@ async function renderEmpty() {
     table(["Folder", "Depth", ""], rows, "No empty folders found.");
 }
 
+// -------------------------------------------------------------- recommended
+
+async function renderRecommended() {
+  busy();
+  const d = await api("/api/candidates");
+  const A = d.items.filter(c => c.tier === "A");
+  const B = d.items.filter(c => c.tier === "B");
+  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
+
+  const section = (title, sub, items, cls) => {
+    if (!items.length) return "";
+    const rows = items.map(c => {
+      const m = age(c.mtime);
+      return "<tr" + (c.decision ? ' class="decided-' + c.decision + '"' : "") + ">" +
+        '<td><input type="checkbox" data-mark="' + esc(c.path) + '"' +
+          (c.decision === "delete" ? " checked" : "") + "></td>" +
+        '<td class="name">' +
+          (c.dir_id ? '<a href="#" data-dir="' + c.dir_id + '">' + esc(c.path) + "</a>"
+                    : esc(c.path)) + "</td>" +
+        '<td class="num">' + size(c.bytes_disk) + "</td>" +
+        '<td class="num">' + (c.n_files > 1 ? c.n_files.toLocaleString() : "") + "</td>" +
+        '<td class="num ' + m.cls + '">' + m.text + "</td>" +
+        '<td class="path">' + esc(c.reason) + "</td>" +
+        "<td>" + revealBtn(c.path) + "</td></tr>";
+    }).join("");
+    return '<h3 style="margin:20px 0 6px;font-size:13px" class="' + cls + '">' +
+      title + " - " + items.length.toLocaleString() + " candidates, " +
+      size(sum(items)) + "</h3>" +
+      '<p class="hint" style="margin:0 0 8px">' + sub + "</p>" +
+      table(["", "Path", "On disk", "Files", "Modified", "Why", ""], rows);
+  };
+
+  view.innerHTML =
+    '<div class="note">Everything the other views know about, condensed into two ' +
+    'lists. <b>Safe</b> means empty, regenerable, or already deleted once. ' +
+    '<b>Decide</b> means real data: the tool can put the number in front of you ' +
+    'but only you know if you still want it. Tick what you would remove; marks ' +
+    'are saved and survive rescans. Nothing here deletes anything yet \u2014 ' +
+    'that is Phase 4, and it will use this list.</div>' +
+    '<div class="cards">' +
+      card(size(sum(A)), "safe tier total") +
+      card(size(sum(B)), "needs a decision") +
+      card(A.length.toLocaleString(), "safe candidates") +
+      card(B.length.toLocaleString(), "decision items") +
+    "</div>" +
+    '<div class="controls"><button id="copychecked">copy checked paths</button>' +
+      '<span class="path" id="copied"></span></div>' +
+    section("Safe to remove", "Empty, regenerable, or already in the Bin.", A, "") +
+    section("Decide", "Big, dormant or redundant - review before anything happens.", B, "");
+
+  document.getElementById("copychecked").onclick = async () => {
+    const paths = [...document.querySelectorAll("input[data-mark]:checked")]
+      .map(x => x.dataset.mark);
+    await navigator.clipboard.writeText(paths.join("\n"));
+    document.getElementById("copied").textContent =
+      paths.length + " paths copied";
+  };
+}
+
 // -------------------------------------------------------------------- search
 
 async function renderSearch(term) {
@@ -442,6 +502,7 @@ async function renderSearch(term) {
 // -------------------------------------------------------------------- routing
 
 const RENDER = {
+  recommended: renderRecommended,
   folders: renderFolders, types: renderTypes, age: renderAge,
   biggest: renderBiggest, video: renderVideo, empty: renderEmpty,
 };
@@ -479,6 +540,21 @@ document.addEventListener("click", e => {
       .then(r => r.json())
       .then(j => { if (!j.ok) alert("Could not open: " + (j.error || "unknown")); });
   }
+});
+
+// A tick on a Recommended row posts a decision that persists by path, so it
+// survives rescans and is what Phase 4 will act on.
+document.addEventListener("change", e => {
+  const mark = e.target.closest("input[data-mark]");
+  if (!mark) return;
+  const choice = mark.checked ? "delete" : "unsure";
+  fetch("/api/decide", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: mark.dataset.mark, choice }),
+  }).then(r => r.json()).then(j => {
+    mark.closest("tr").className = j.ok ? "decided-" + choice : "";
+  });
 });
 
 let searchTimer = null;

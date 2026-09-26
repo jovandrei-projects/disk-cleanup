@@ -95,6 +95,17 @@ use `;`.
    this and the Age tab shows it, so the claim stays checkable instead of
    becoming folklore. Re-derive it before trusting `atime` on any other machine;
    the reverse error, assuming `atime` is always useless, is just as wrong.
+10. **A `LIKE` pattern is not a place for Python escaping habits.** `'C:\\\\Users'`
+    in source produces the pattern `C:\\Users`, which matches nothing and fails
+    *silently* - zero rows is not an error. Single backslash is a literal in SQL
+    `LIKE`: write `'C:\\Users\\%'` in source. Candidate generation once shipped
+    with 24 over-escaped patterns and quietly returned empty lists for six
+    candidate kinds. When a filter returns nothing on a machine where you know
+    matches exist, suspect the pattern first.
+11. **Empty folders need their *branch*, not their leaves.** A folder that holds
+    only empty folders is one decision; reporting each leaf produced 95k rows,
+    70k of them inside `WinSxS\Temp`. The right query is "subtree with zero
+    files whose parent is not itself empty", grouped by parent.
 
 ## Running things
 
@@ -105,7 +116,15 @@ python scan.py --list-snapshots     what has been scanned already
 python scan.py --finish 1           index and roll up a walk that was interrupted
                                     afterwards; recomputes totals from the rows,
                                     so it is safe to re-run
+python scan.py --refresh "C:\path"  rescan ONE subtree into a new snapshot (~1 min).
+                                    The rest of the tree is copied from the latest
+                                    complete snapshot. If the path is gone, its
+                                    parent is refreshed instead - which is also
+                                    how a deletion gets verified.
 ```
+
+A snapshot is immutable once complete; refreshes append a new one that chains
+via `snapshots.refresh_of`/`refresh_path`, so any two snapshots can be diffed.
 
 Verify a scan before building on it. `--verify` checks the rollup invariant -
 the root's subtree totals against the sums over `files` - and prints where the

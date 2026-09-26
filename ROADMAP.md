@@ -64,7 +64,12 @@ re-walking the disk. Delivered as `scan.py`; snapshot 1 in
 - [x] Verify the rollup arithmetic, not just its plausibility: root subtree totals equal the sums over the `files` table. `--verify` asserts this and reports OK
 - [x] Confirm scanning does not hydrate OneDrive placeholders - free space unchanged across a scan of `Documentos` apart from the growth of the scan database itself
 - [ ] Re-run elevated to close the remaining gap. 603 of 607 errors are permission denials, 511 of them in `ProgramData\Microsoft\Windows`. Only 3 touch user data, so this is a completeness matter, not a blocker
-- [ ] Measure `System Volume Information` (restore points and shadow copies), which is on the skip list and is likely most of the 20.4 GB gap. Needs `vssadmin list shadowstorage` elevated. Genuinely reclaimable, so worth knowing
+- [ ] Measure `System Volume Information` (restore points and shadow copies), which is on the skip list and is likely most of the gap. Needs `vssadmin list shadowstorage` elevated. Genuinely reclaimable, so worth knowing
+
+**Status line (updated 2026-09-26):** snapshot 2 is current - 699.4 GB on disk,
+723.1 GB used per Windows. The user already deleted `Escritorio\Hikaru no Go`
+(66.9 GB) by hand; the refresh verified it is gone and the baseline total now
+reflects it.
 
 ### What Phase 1 found
 
@@ -136,6 +141,15 @@ Delivered as `app.py` plus `web/`. `python app.py` serves
 - [x] **A video view of its own**, since video is 59% of the used space: folders holding local video, and every local video file over 700 MB
 - [x] Name search across folders and files
 - [x] Empty-folder list, carried forward from the Phase 1 findings
+- [x] **Recommended tab** - every deletion signal condensed into two tiers:
+      "Safe to remove" (empty, regenerable, Recycle Bin, caches: 16.3 GB) and
+      "Decide" (stale large files, VMs, archives, installers: 140.3 GB).
+      Checkboxes save keep/delete marks to a `decisions` table keyed by path, so
+      they survive rescans and feed Phase 4
+- [x] `scan.py --refresh <path>` - rescan one subtree into a new snapshot in
+      about a minute instead of re-walking C:. Verified live: the user's
+      deletion of `Escritorio\Hikaru no Go` (66.9 GB) shows snapshot 2 at
+      699.4 GB on disk vs 773.9 GB, with the folder confirmed absent
 - [x] Annotate `node_modules`, `__pycache__`, caches and similar as regenerable, and mark junctions so their zero size is not mistaken for a bug
 - [x] Verify the views agree with the snapshot: age buckets and type groups each sum to exactly 773.9 GB and 956,012 files, so no rows are lost in grouping
 - [x] `test_render.js`, which renders every view against a running server and inspects the output. Added after a mismatched quote shipped a blank page with all API tests green - checking the endpoints was never a check on the app

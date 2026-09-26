@@ -112,6 +112,10 @@ label { color: var(--dim); font-size: 12px; }
 .stale { color: var(--warn); }
 .verystale { color: var(--bad); }
 td.dim { color: #6a7182; }
+
+tr.decided-delete td { color: #6a7182; background: #241d1d; }
+tr.decided-keep td { background: #1b241e; }
+tr.decided-unsure td { color: #6a7182; }
 .loading { color: var(--dim); padding: 20px 0; }
 .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .card {
