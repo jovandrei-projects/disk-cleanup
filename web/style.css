@@ -116,6 +116,39 @@ td.dim { color: #6a7182; }
 tr.decided-delete td { color: #6a7182; background: #241d1d; }
 tr.decided-keep td { background: #1b241e; }
 tr.decided-unsure td { color: #6a7182; }
+
+/* the Recommended tree */
+ul.tree, ul.tree ul { list-style: none; margin: 0; padding-left: 22px; }
+ul.tree { padding-left: 4px; }
+ul.tree li { border-left: 1px dotted var(--line); }
+ul.tree > li { border-left: none; }
+
+details.tdir > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  padding: 3px 4px; border-radius: 3px;
+}
+details.tdir > summary:hover { background: #1e222a; }
+details.tdir > summary::before {
+  content: "\25B8"; /* ▸ */
+  display: inline-block; width: 14px; color: var(--dim);
+}
+details.tdir[open] > summary::before { content: "\25BE"; /* ▾ */ }
+.tdirname { color: var(--accent); font-weight: 500; }
+.tstats { color: var(--dim); font-size: 11.5px; margin-left: 10px; }
+
+.trow {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 2px 4px; border-radius: 3px;
+}
+.trow:hover { background: #1e222a; }
+.trow .tname { flex: 1; min-width: 0; word-break: break-all; }
+.trow .treason { color: var(--dim); font-size: 11.5px; margin-left: 8px; }
+.trow .tsize { min-width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
+.trow .tfiles { min-width: 50px; text-align: right; color: var(--dim);
+  font-variant-numeric: tabular-nums; }
+.trow .tage { min-width: 48px; text-align: right; }
+.trow.decided-delete .tname { color: #6a7182; }
+.trow.decided-delete { background: #241d1d; }
 .loading { color: var(--dim); padding: 20px 0; }
 .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .card {

@@ -405,6 +405,75 @@ async function renderEmpty() {
 
 // -------------------------------------------------------------- recommended
 
+// Candidates rendered as a `tree`-style hierarchy: sorted by name at every
+// level, collapsible, with the candidate itself on the leaf. A chain of nested
+// folders that each contain a single thing is merged into one "a\b\c" label -
+// tree shows every level, but an eight-deep unary chain is not information.
+function buildTree(items) {
+  const root = { name: "", children: new Map(), item: null, leaves: 0, bytes: 0 };
+  for (const c of items) {
+    const parts = c.path.split("\\");
+    let node = root;
+    node.leaves++; node.bytes += c.bytes_disk;
+    for (let i = 0; i < parts.length; i++) {
+      const seg = parts[i] || "\\";
+      const key = seg.toLowerCase();
+      if (!node.children.has(key))
+        node.children.set(key, { name: seg, children: new Map(),
+                                 item: null, leaves: 0, bytes: 0 });
+      node = node.children.get(key);
+      node.leaves++; node.bytes += c.bytes_disk;
+      if (i === parts.length - 1) node.item = c;
+    }
+  }
+  return root;
+}
+
+function sortedKids(node) {
+  return [...node.children.values()].sort(
+    (a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+}
+
+function leafRow(c, label) {
+  const m = age(c.mtime);
+  return '<div class="trow' + (c.decision ? " decided-" + c.decision : "") + '">' +
+    '<input type="checkbox" data-mark="' + esc(c.path) + '"' +
+      (c.decision === "delete" ? " checked" : "") + ">" +
+    '<span class="tname">' +
+      (c.dir_id ? '<a href="#" data-dir="' + c.dir_id + '">' + esc(label) + "</a>"
+                : esc(label)) +
+      ' <span class="treason">' + esc(c.reason) + "</span></span>" +
+    '<span class="tsize">' + size(c.bytes_disk) + "</span>" +
+    '<span class="tfiles">' + (c.n_files > 1 ? c.n_files.toLocaleString() : "") + "</span>" +
+    '<span class="tage ' + m.cls + '">' + m.text + "</span>" +
+    revealBtn(c.path) + "</div>";
+}
+
+function nodeLI(child) {
+  // Collapse chains where each node has a single child and no candidate of its
+  // own; the label accumulates the whole chain so depth stays meaningful.
+  let label = child.name, n = child;
+  while (n.children.size === 1 && !n.item) {
+    n = [...n.children.values()][0];
+    label += "\\" + n.name;
+  }
+  const kids = sortedKids(n);
+  if (n.item && kids.length === 0)
+    return "<li>" + leafRow(n.item, label) + "</li>";
+  return '<li><details class="tdir"' + (n.leaves <= 6 ? " open" : "") + ">" +
+    "<summary><span class=\"tdirname\">" + esc(label) + "</span>" +
+    '<span class="tstats">' + n.leaves.toLocaleString() +
+      (n.leaves === 1 ? " item" : " items") + " \u2014 " + size(n.bytes) +
+    "</span></summary>" +
+    (n.item ? leafRow(n.item, n.name) : "") +
+    "<ul>" + kids.map(nodeLI).join("") + "</ul></details></li>";
+}
+
+function treeHTML(items) {
+  const root = buildTree(items);
+  return '<ul class="tree">' + sortedKids(root).map(nodeLI).join("") + "</ul>";
+}
+
 async function renderRecommended() {
   busy();
   const d = await api("/api/candidates");
@@ -412,27 +481,12 @@ async function renderRecommended() {
   const B = d.items.filter(c => c.tier === "B");
   const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
 
-  const section = (title, sub, items, cls) => {
+  const section = (title, sub, items) => {
     if (!items.length) return "";
-    const rows = items.map(c => {
-      const m = age(c.mtime);
-      return "<tr" + (c.decision ? ' class="decided-' + c.decision + '"' : "") + ">" +
-        '<td><input type="checkbox" data-mark="' + esc(c.path) + '"' +
-          (c.decision === "delete" ? " checked" : "") + "></td>" +
-        '<td class="name">' +
-          (c.dir_id ? '<a href="#" data-dir="' + c.dir_id + '">' + esc(c.path) + "</a>"
-                    : esc(c.path)) + "</td>" +
-        '<td class="num">' + size(c.bytes_disk) + "</td>" +
-        '<td class="num">' + (c.n_files > 1 ? c.n_files.toLocaleString() : "") + "</td>" +
-        '<td class="num ' + m.cls + '">' + m.text + "</td>" +
-        '<td class="path">' + esc(c.reason) + "</td>" +
-        "<td>" + revealBtn(c.path) + "</td></tr>";
-    }).join("");
-    return '<h3 style="margin:20px 0 6px;font-size:13px" class="' + cls + '">' +
+    return '<h3 style="margin:20px 0 6px;font-size:13px">' +
       title + " - " + items.length.toLocaleString() + " candidates, " +
       size(sum(items)) + "</h3>" +
-      '<p class="hint" style="margin:0 0 8px">' + sub + "</p>" +
-      table(["", "Path", "On disk", "Files", "Modified", "Why", ""], rows);
+      '<p class="hint" style="margin:0 0 8px">' + sub + "</p>" + treeHTML(items);
   };
 
   view.innerHTML =
@@ -449,9 +503,11 @@ async function renderRecommended() {
       card(B.length.toLocaleString(), "decision items") +
     "</div>" +
     '<div class="controls"><button id="copychecked">copy checked paths</button>' +
+      '<button id="expandall">expand all</button>' +
+      '<button id="collapseall">collapse all</button>' +
       '<span class="path" id="copied"></span></div>' +
-    section("Safe to remove", "Empty, regenerable, or already in the Bin.", A, "") +
-    section("Decide", "Big, dormant or redundant - review before anything happens.", B, "");
+    section("Safe to remove", "Empty, regenerable, or already in the Bin.", A) +
+    section("Decide", "Big, dormant or redundant - review before anything happens.", B);
 
   document.getElementById("copychecked").onclick = async () => {
     const paths = [...document.querySelectorAll("input[data-mark]:checked")]
@@ -460,6 +516,10 @@ async function renderRecommended() {
     document.getElementById("copied").textContent =
       paths.length + " paths copied";
   };
+  document.getElementById("expandall").onclick = () =>
+    view.querySelectorAll("details.tdir").forEach(x => x.open = true);
+  document.getElementById("collapseall").onclick = () =>
+    view.querySelectorAll("details.tdir").forEach(x => x.open = false);
 }
 
 // -------------------------------------------------------------------- search

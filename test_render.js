@@ -103,7 +103,7 @@ function assertRendered(name, mustContain) {
         document.getElementById("usagebar").innerHTML.includes("seg-scanned"));
 
   const cases = [
-    ["recommended", ["Safe to remove", "Decide", "<table"]],
+    ["recommended", ["Safe to remove", "Decide", 'class="tree"', "data-mark="]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
     ["types", ["By extension", "<table", "video"]],
     ["age", ["Last modified", "<table", "cannot be trusted"]],
