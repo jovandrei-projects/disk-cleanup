@@ -103,13 +103,15 @@ function assertRendered(name, mustContain) {
         document.getElementById("usagebar").innerHTML.includes("seg-scanned"));
 
   const cases = [
-    ["recommended", ["Safe to remove", "Decide", 'class="tree"', "data-mark="]],
+    ["recommended", ["Safe to remove", "Decide", 'class="tree"', "data-mark=",
+                     "Duplicate files", "Duplicate folders"]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
     ["types", ["By extension", "<table", "video"]],
     ["age", ["Last modified", "<table", "cannot be trusted"]],
     ["biggest", ["not touched in", "<table", "judged by"]],
     ["video", ["Folders holding local video", "<table"]],
     ["empty", ["<table", "Depth"]],
+    ["software", ["<table", "registry", "Install location"]],
   ];
 
   for (const [tab, must] of cases) {

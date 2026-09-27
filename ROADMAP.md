@@ -189,16 +189,16 @@ about 1.1 s, which is a substring `LIKE` and cannot use an index.
 
 Read-only. Produces ranked candidate lists, deletes nothing.
 
-- [ ] **Stale and large**: not *modified* in N years, over a size threshold, ranked by GB. Not accessed - see the Phase 2 correction
-- [ ] **Regenerable junk**: `node_modules`, `.venv`, `__pycache__`, build outputs, browser and app caches, `Temp`, Windows Update leftovers, old restore points - grouped by how safely they come back
-- [ ] **Finished downloads and installers**: `.iso`, `.msi`, `.exe` installers, archives in `Downloads` / `SoftwareTorrent` / `AvidDownloads`
-- [ ] **Duplicates**: group by size, then partial hash, then full hash. Report only proven byte-identical sets, with all copies' paths so you pick which to keep
-- [ ] **Duplicate trees**: whole folders that are copies of each other - notably `E:\Projects\singing-practice-tools` vs `C:\Users\andry\OneDrive\Documentos\_Personal\Clases canto\Tools`
-- [ ] **Empty folders**, reported with whether they hold hidden files (e.g. `Documentos\StarCraft II`, already confirmed empty)
-- [ ] **Emulator and VM images**: `.android\avd`, Android SDK system images, Play Games AVDs, `.vhdx`/`.qcow2`. 19.4 GB of disk images total, much of it stale, and all of it regenerable by recreating the emulator
-- [ ] **macOS turds**: `._*` and `.DS_Store` files, notably throughout `E:\Projects`. Tiny, but they are noise in every listing
-- [ ] **Installed software inventory**: every program with its install size and last-used date, so the decision is per-application, not per-folder
-- [ ] Every candidate carries a confidence and a one-line reason in the viewer
+- [x] **Stale and large**: not *modified* in N years, over a size threshold, ranked by GB. Not accessed - see the Phase 2 correction
+- [x] **Regenerable junk**: `node_modules`, `.venv`, `__pycache__`, build outputs, browser and app caches, `Temp`, Windows Update leftovers, old restore points - grouped by how safely they come back
+- [x] **Finished downloads and installers**: `.iso`, `.msi`, `.exe` installers, archives in `Downloads` / `SoftwareTorrent` / `AvidDownloads`
+- [x] **Duplicates**: group by size, then partial hash, then full hash. Report only proven byte-identical sets, with all copies' paths so you pick which to keep. `analyze.py --dupes`; 2,687 sets on snapshot 2, hard links counted as one physical copy
+- [x] **Duplicate trees**: whole folders that are copies of each other. Subtree signatures + hash proof where small enough - 168 groups reported, 143 proven identical on snapshot 2. The `E:\Projects` card was not mounted on 2026-09-27, so that specific pair is still unverified
+- [x] **Empty folders**, reported with whether they hold hidden files (e.g. `Documentos\StarCraft II`, already confirmed empty)
+- [x] **Emulator and VM images**: `.android\avd`, Android SDK system images, Play Games AVDs, `.vhdx`/`.qcow2`. 19.4 GB of disk images total, much of it stale, and all of it regenerable by recreating the emulator
+- [x] **macOS turds**: `._*` and `.DS_Store` files, notably throughout `E:\Projects`. Tiny, but they are noise in every listing
+- [x] **Installed software inventory**: every program with its install size (measured on disk where the install folder was found, registry estimate otherwise) and install-dir modification date - the "Software" tab
+- [x] Every candidate carries a confidence and a one-line reason in the viewer: tier A/B plus the reason string, and on duplicates the proven / names-and-sizes-only / unverified verdict
 
 ## Phase 4 - Reclaim space
 

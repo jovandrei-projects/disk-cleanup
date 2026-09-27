@@ -161,6 +161,15 @@ python scan.py --refresh "C:\path"  rescan ONE subtree into a new snapshot (~1 m
                                     complete snapshot. If the path is gone, its
                                     parent is refreshed instead - which is also
                                     how a deletion gets verified.
+
+python analyze.py --dupes           hash same-size files and prove duplicate
+                                    folders; persists dup_sets/dup_members/
+                                    tree_proofs for the viewer (minutes the
+                                    first time; hashes are cached by path).
+                                    Re-run after a refresh.
+python analyze.py --trees           print duplicate-folder groups (fast, no
+                                    new hashing - reads stored verdicts)
+python analyze.py --software        print the installed-software inventory
 ```
 
 A snapshot is immutable once complete; refreshes append a new one that chains

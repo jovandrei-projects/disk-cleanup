@@ -22,7 +22,7 @@ import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-from analyze import candidates as compute_candidates
+import analyze
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
@@ -71,6 +71,7 @@ class Store:
             " id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
             " choice TEXT NOT NULL, decided_at REAL NOT NULL, note TEXT)")
         self.conn.commit()
+        analyze.ensure_schema(self.conn)
         # A snapshot never changes once complete, so whole-table aggregates are
         # computed once and kept. Without this the Age tab re-scans 956k rows on
         # every click.
@@ -83,7 +84,8 @@ class Store:
 
     def warm(self):
         for key, fn in (("snapshot", self._snapshot), ("types", self._types),
-                        ("ages", self._ages),
+                        ("ages", self._ages), ("treedups", self._treedups),
+                        ("software", self._software),
                         ("candidates", lambda: self._candidates())):
             t = time.time()
             self.cached(key, fn)
@@ -309,12 +311,23 @@ class Store:
         return {"dirs": dirs, "files": files}
 
     def _candidates(self):
-        data = compute_candidates(self.conn, self.sid)
+        data = analyze.candidates(self.conn, self.sid)
         marks = {r["path"]: r["choice"] for r in self.q(
             "SELECT path, choice FROM decisions")}
         for c in data["items"]:
             c["decision"] = marks.get(c["path"])
+        dups = analyze.dup_sets(self.conn, self.sid)
+        for s in dups["sets"]:
+            for m in s["members"]:
+                m["decision"] = marks.get(m["path"])
+        data["dup_sets"] = dups
         return data
+
+    def _treedups(self):
+        return analyze.tree_dups(self.conn, self.sid)
+
+    def _software(self):
+        return analyze.software(self.conn, self.sid)
 
     def decide(self, path, choice):
         self.conn.execute(
@@ -418,6 +431,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"dirs": s.empty_dirs()})
             if u.path == "/api/candidates":
                 return self.send_json(s.cached("candidates", s._candidates))
+            if u.path == "/api/treedups":
+                return self.send_json(s.cached("treedups", s._treedups))
+            if u.path == "/api/software":
+                return self.send_json({"apps": s.cached("software", s._software)})
             if u.path == "/api/decisions":
                 return self.send_json({"decisions": s.q(
                     "SELECT path, choice, decided_at FROM decisions")})

@@ -1,78 +1,47 @@
 # Task: Analysis passes - finish the candidate kinds
 
-**Status:** next
-**Started:** —   **Last touched:** 2026-09-26 (filed, not started)
+**Status:** done, apart from one blocked comparison (E: unmounted)
+**Started:** 2026-09-27   **Last touched:** 2026-09-27
 
 ## Objective
 
 Every candidate kind in `ROADMAP.md` Phase 3 is produced from the snapshot
-and shown in the viewer with a one-line reason. `analyze.py` already covers
-stale-large, regenerable, installers/downloads, empty folders, macOS litter,
-VM images and the Recycle Bin. What no code produces yet: hash-proven
-duplicates, duplicate trees, and the installed-software inventory.
+and shown in the viewer with a one-line reason. All ten kinds now exist.
 
-## Not in scope
+## What landed (2026-09-27)
 
-Deleting anything - that is `reclaim-space/`. The video decision is the
-user's. A treemap view.
-
-## Decisions already made
-
-- **Duplicate means byte-identical, proven by hash.** The roadmap's pipeline:
-  group by size, then partial hash, then full hash. `hashlib` is stdlib.
-- **Never read the contents of a OneDrive placeholder** (`cloud_only=1`).
-  Hashing opens the file and hydrates it, so placeholders are excluded from
-  every pass, not just the final one.
-- New kinds join the Recommended list rather than getting their own tab,
-  except where the shape differs: a duplicate set is a *group* of paths, not
-  one row.
-
-## Phases
-
-### Phase 1 - Duplicates by hash
-
-- [ ] Size grouping over `files`: `cloud_only=0`, above a floor worth
-      hashing for, more than one file per size
-- [ ] Partial hash (head + tail chunk) to cull, then full hash on survivors
-- [ ] Report sets, not files: every copy's path, reclaimable = (n-1) x size
-- [ ] Viewer rows for duplicate sets, with keep/delete marks that survive
-      rescans the way `decisions` already does
-
-### Phase 2 - Duplicate trees
-
-- [ ] `E:\Projects\singing-practice-tools` vs `C:\Users\andry\OneDrive\
-      Documentos\_Personal\Clases canto\Tools`. `E:` is not in the snapshot -
-      a `scan.py --root E:\Projects` subtree scan gets it without walking the
-      Switch folders, which are siblings of `E:\Projects`, not children
-- [ ] Generic whole-tree duplicate detection inside `C:` if it is cheap -
-      sibling dirs with identical file sets
-
-### Phase 3 - Installed software inventory
-
-- [ ] Uninstall registry keys (HKLM + HKCU, 64- and 32-bit views) via
-      `winreg`: display name, install location, estimated size
-- [ ] Join each InstallLocation to the scanned dirs so the per-app number is
-      the real on-disk size, not the registered estimate
-- [ ] Viewer table: one row per application
-
-### Phase 4 - Confidence
-
-- [ ] `ROADMAP.md` asks each candidate to carry a confidence and a one-line
-      reason; tier A/B plus the reason string is the current answer. Decide
-      whether that is enough or add a confidence field per kind
-
-## Where it stopped
-
-Not started. Begin with Phase 1's size grouping - and read the `dirs`/`files`
-schema in `scan.py` before writing queries. Trap 10 applies to every `LIKE`
-pattern written for this task: single backslash is literal, `'C:\\Users\\%'`
-in source.
+- `analyze.py --dupes`: same-size grouping (>=1 MB, `cloud_only=0`) ->
+  head+tail 64 KB partial hash -> SHA-256 -> `dup_sets`/`dup_members` tables.
+  Members carry `nlink`/`ino` so the viewer counts **physical copies** -
+  1,766 of 2,687 sets are fewer files than names (hard links, trap 3).
+  Result on snapshot 2: 2,687 proven sets, 6,984 copies; honest reclaimable
+  is far under the naive 18.3 GB. `hashes(path,size,mtime,sha256)` persists
+  across runs and snapshots.
+- `analyze.py --trees` / `Store._treedups`: per-dir subtree signature
+  (name+size of every descendant) -> topmost-match collapse -> groups
+  reported only if not wholly under protected roots. Proof verdicts persist
+  in `tree_proofs(snapshot_id,sig)`; `--dupes` proves (143 identical,
+  17 differing, 168 reported of 275 signature groups), the viewer pass only
+  reads. Signature computation is ~4 s inside `warm`.
+- `analyze.py --software` / `Store._software`: HKLM64/HKLM32/HKCU uninstall
+  keys, minus SystemComponent/ParentKeyName, `InstallLocation` (or
+  uninstaller-dir guess) joined to scanned dirs -> 96 apps, real on-disk
+  size where locatable. New "Software" tab.
+- Viewer: "Duplicate files" + "Duplicate folders" sections in Recommended
+  (tick the copies to remove; marks go to `decisions` by path).
 
 ## Deferred or blocked
 
-—
+- **`E:\Projects` vs `Clases canto\Tools` comparison** - the SD card is not
+  mounted, so the specific pair can't be checked. Generic C:-resident tree
+  dups work and found the real cases (e.g. the copilot `website` copy, Zoom
+  `Emojis` x2). Re-run `analyze.py --trees` after scanning `E:\Projects`
+  when the card is back.
+- **`analyze.py --dupes` must be re-run after a refresh** - the viewer
+  warns when `computed_for` differs from the loaded snapshot.
 
 ## Verification
 
-The three-command gate under *Verifying a change* in `AGENTS.md`, plus
-`python scan.py --verify`. `test_render.js` needs a case for any new view.
+`node --check`, `py_compile`, `test_render.js` (all views incl. new
+`software` case) and `scan.py --verify` pass. Tested on port 8771 - 8770
+was already held by an older app.py instance.

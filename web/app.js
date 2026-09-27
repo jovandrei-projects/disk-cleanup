@@ -68,6 +68,7 @@ const TABS = [
   ["biggest", "Biggest files"],
   ["video", "Video"],
   ["empty", "Empty folders"],
+  ["software", "Software"],
 ];
 
 function busy() { view.innerHTML = '<div class="loading">loading...</div>'; }
@@ -474,9 +475,108 @@ function treeHTML(items) {
   return '<ul class="tree">' + sortedKids(root).map(nodeLI).join("") + "</ul>";
 }
 
+// A duplicate set is a group of paths, not one row: one <details> per set,
+// a tickable row per copy. Ticking a copy marks it for deletion while the
+// unticked copy stays - which is exactly the decision Phase 4 needs.
+function dupMemberRow(m) {
+  const a = age(m.mtime);
+  return '<div class="trow' + (m.decision ? " decided-" + m.decision : "") + '">' +
+    '<input type="checkbox" data-mark="' + esc(m.path) + '"' +
+      (m.decision === "delete" ? " checked" : "") + ">" +
+    '<span class="tname">' +
+      (m.dir_id ? '<a href="#" data-dir="' + m.dir_id + '">' + esc(m.path) + "</a>"
+                : esc(m.path)) +
+      (m.shared ? '<span class="tag">hard link</span>' : "") +
+      (m.protected ? '<span class="tag">system area - report only</span>' : "") +
+    "</span>" +
+    '<span class="tsize">' + size(m.bytes_disk) + "</span>" +
+    '<span class="tfiles"></span>' +
+    '<span class="tage ' + a.cls + '">' + a.text + "</span>" +
+    revealBtn(m.path) + "</div>";
+}
+
+function dupFilesSection(dups) {
+  const head = '<h3 style="margin:20px 0 6px;font-size:13px">Duplicate files';
+  if (!dups || dups.computed_for == null)
+    return head + "</h3>" +
+      '<p class="hint" style="margin:0 0 8px">Not computed yet \u2014 run ' +
+      '<code>python analyze.py --dupes</code> once. It hashes only files that ' +
+      'share an exact size, keeps the result in the database, and takes a few ' +
+      "minutes the first time.</p>";
+  if (!dups.sets.length)
+    return head + " - none</h3>" +
+      '<p class="hint" style="margin:0 0 8px">No byte-identical duplicates ' +
+      "at the 1 MB floor.</p>";
+  const stale = dups.computed_for !== SNAP.id;
+  // Hard links mean N names can point at M < N physical copies; only
+  // physical copies cost disk, and one of them has to stay anyway.
+  const annotated = dups.sets.map(s => {
+    const phys = new Set(s.members.map(m => m.ino)).size;
+    return { s, phys, rec: Math.max(0, phys - 1) * s.bytes_logical };
+  }).sort((a, b) => b.rec - a.rec);
+  const shown = annotated.slice(0, 400);
+  const lis = shown.map(({ s, phys, rec }) => {
+    const names = phys < s.n
+      ? s.n + " names, " + phys + " physical copies \u2014 "
+      : s.n + " identical copies \u2014 ";
+    return '<li><details class="tdir"><summary>' +
+      '<span class="tdirname">' + names + size(s.bytes_logical) +
+        " each</span>" +
+      '<span class="tstats">' +
+        (phys > 1 ? "removing all but one frees " + size(rec)
+                  : "one physical copy - nothing to reclaim") +
+        " \u2014 sha256 " + esc(s.sha256) + "\u2026</span></summary>" +
+      s.members.map(dupMemberRow).join("") + "</details></li>";
+  }).join("");
+  return head + " - " + dups.sets.length + " proven sets</h3>" +
+    (stale ? '<p class="hint" style="margin:0 0 8px">Computed against snapshot ' +
+      dups.computed_for + " \u2014 re-run <code>python analyze.py --dupes</code> " +
+      "to refresh.</p>" : "") +
+    '<p class="hint" style="margin:0 0 8px">Every copy in a set is ' +
+    "byte-identical (SHA-256). Tick the copies you would remove." +
+    (annotated.length > shown.length
+      ? " Biggest " + shown.length + " of " + annotated.length +
+        " sets shown." : "") + "</p>" +
+    '<ul class="tree">' + lis + "</ul>";
+}
+
+function dupTreesSection(t) {
+  const head = '<h3 style="margin:20px 0 6px;font-size:13px">Duplicate folders';
+  if (!t || !t.groups || !t.groups.length)
+    return head + " - none</h3>" +
+      '<p class="hint" style="margin:0 0 8px">No folders with identical ' +
+      "names-and-sizes throughout.</p>";
+  const lis = t.groups.map(g => {
+    const tag = g.proven === true
+      ? '<span class="tag regen">proven identical</span>'
+      : '<span class="tag">' + esc(g.note || "unverified") + "</span>";
+    const rows = g.members.map(m =>
+      '<div class="trow"><input type="checkbox" data-mark="' + esc(m.path) + '">' +
+      '<span class="tname"><a href="#" data-dir="' + m.dir_id + '">' +
+        esc(m.path) + "</a>" +
+        (m.protected ? '<span class="tag">system area - report only</span>' : "") +
+      "</span>" +
+      '<span class="tsize">' + size(m.bytes_disk) + "</span>" +
+      '<span class="tfiles">' + m.n_files.toLocaleString() + "</span>" +
+      '<span class="tage"></span>' + revealBtn(m.path) + "</div>").join("");
+    return '<li><details class="tdir"><summary>' +
+      '<span class="tdirname">' + g.n + " copies of the same folder \u2014 " +
+        size(g.bytes_disk) + " each " + tag + "</span>" +
+      '<span class="tstats">removing all but one frees ' +
+        size(g.reclaimable) + "</span></summary>" +
+      rows + "</details></li>";
+  }).join("");
+  return head + " - " + t.groups.length + " groups</h3>" +
+    '<p class="hint" style="margin:0 0 8px">Folders whose contents match ' +
+    "name-for-name and size-for-size at every level. Small ones were also " +
+    "hash-proven; larger ones are labelled so.</p>" +
+    '<ul class="tree">' + lis + "</ul>";
+}
+
 async function renderRecommended() {
   busy();
-  const d = await api("/api/candidates");
+  const [d, td] = await Promise.all([
+    api("/api/candidates"), api("/api/treedups")]);
   const A = d.items.filter(c => c.tier === "A");
   const B = d.items.filter(c => c.tier === "B");
   const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
@@ -507,7 +607,9 @@ async function renderRecommended() {
       '<button id="collapseall">collapse all</button>' +
       '<span class="path" id="copied"></span></div>' +
     section("Safe to remove", "Empty, regenerable, or already in the Bin.", A) +
-    section("Decide", "Big, dormant or redundant - review before anything happens.", B);
+    section("Decide", "Big, dormant or redundant - review before anything happens.", B) +
+    dupFilesSection(d.dup_sets) +
+    dupTreesSection(td);
 
   document.getElementById("copychecked").onclick = async () => {
     const paths = [...document.querySelectorAll("input[data-mark]:checked")]
@@ -520,6 +622,44 @@ async function renderRecommended() {
     view.querySelectorAll("details.tdir").forEach(x => x.open = true);
   document.getElementById("collapseall").onclick = () =>
     view.querySelectorAll("details.tdir").forEach(x => x.open = false);
+}
+
+// ------------------------------------------------------------------ software
+
+async function renderSoftware() {
+  busy();
+  const d = await api("/api/software");
+  const max = Math.max(...d.apps.map(a => a.real_bytes || a.est_bytes || 0), 1);
+  const rows = d.apps.map(a => {
+    const m = age(a.dir_mtime);
+    const sz = a.real_bytes != null ? a.real_bytes : (a.est_bytes || 0);
+    const loc = a.loc
+      ? (a.dir_id
+          ? '<a href="#" data-dir="' + a.dir_id + '">' + esc(a.loc) + "</a>"
+          : esc(a.loc)) +
+        (a.loc_guess ? '<span class="tag">inferred</span>' : "")
+      : "";
+    return "<tr>" +
+      '<td class="name">' + esc(a.name) +
+        (a.version ? '<span class="tag">' + esc(a.version) + "</span>" : "") +
+        '<div class="path">' + esc(a.publisher) + "</div></td>" +
+      barCell(sz, max) +
+      '<td class="num dim">' + (a.real_bytes == null && a.est_bytes ? "registry est." : "") + "</td>" +
+      '<td class="num">' + esc(a.install_date) + "</td>" +
+      '<td class="num ' + m.cls + '">' + m.text + "</td>" +
+      "<td>" + loc + "</td>" +
+      "<td>" + (a.loc ? revealBtn(a.loc) : "") + "</td></tr>";
+  }).join("");
+  view.innerHTML =
+    '<p class="hint">Every application registered under the Windows uninstall ' +
+    "keys, sorted by footprint. <b>Size</b> is the measured on-disk size of " +
+    "the install folder where it could be located; the rest show the " +
+    "registry's own estimate, which is often absent or wrong. Removal goes " +
+    "through Add/Remove Programs \u2014 these folders are never deleted " +
+    "directly.</p>" +
+    table(["Application", "Size", "", "Installed", "Content modified",
+           "Install location", ""], rows,
+          "No registered applications found.");
 }
 
 // -------------------------------------------------------------------- search
@@ -565,6 +705,7 @@ const RENDER = {
   recommended: renderRecommended,
   folders: renderFolders, types: renderTypes, age: renderAge,
   biggest: renderBiggest, video: renderVideo, empty: renderEmpty,
+  software: renderSoftware,
 };
 
 function show(tab) {
