@@ -221,6 +221,14 @@ the process, because a snapshot never changes once complete. Without that cache
 the Age tab cost 25 s per click. If a new view needs a full-table aggregate,
 add it to `Store.warm` rather than computing it per request.
 
+## First run on a new machine
+
+Clone and `python scan.py` - that is the whole setup. `data/inventory.sqlite3`
+is a map of whatever machine it runs on, so an old machine's snapshots are
+worthless on a new one: do not copy `data/` across machines. The full `C:`
+walk takes about 10 minutes; `python app.py` serves the viewer once a
+snapshot exists.
+
 ## Verifying a change
 
 Run all three. The first two are instant and catch most of it:
