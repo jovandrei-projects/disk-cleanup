@@ -21,6 +21,7 @@ import ctypes
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -474,16 +475,18 @@ def recycle_bin_size(db, sid):
 
 
 def self_test():
-    """Prove the primitive on scratch files: delete, bin, restore. Phase 1."""
-    base = os.path.join(os.path.dirname(HERE),
-                        "reclaim-selftest-%d" % os.getpid())
-    os.makedirs(os.path.join(base, "sub"))
+    """Prove the primitive on scratch files: delete, bin, restore. Phase 1.
+
+    Scratch lives in %TEMP%, not next to the project, and cleanup runs in a
+    finally so a mid-test failure cannot leave a folder behind. The decisions
+    row is removed the same way - a stale delete-mark on a vanished path would
+    block a real batch with a refusal.
+    """
+    import tempfile
+    base = tempfile.mkdtemp(prefix="reclaim-selftest-")
+    db = None
     fa = os.path.join(base, "a.txt")
     fb = os.path.join(base, "sub", "b.txt")
-    with open(fa, "w") as f:
-        f.write("alpha")
-    with open(fb, "w") as f:
-        f.write("beta" * 1000)
     ok = True
 
     def check(label, cond, detail=""):
@@ -492,66 +495,73 @@ def self_test():
         print("%s %s%s" % ("ok  " if cond else "FAIL", label,
                            " - " + detail if detail else ""))
 
-    # Guard refuses the never-touch list, allows the scratch file.
-    check("guard refuses C:\\Windows", guard_reason(r"C:\Windows") is not None)
-    check("guard refuses hiberfil", guard_reason(r"C:\hiberfil.sys") is not None)
-    check("guard refuses ProgramData subtree",
-          guard_reason(r"C:\ProgramData\x") is not None)
-    check("guard refuses the tool itself",
-          guard_reason(os.path.join(HERE, "app.py")) is not None)
-    check("guard refuses nonexistent", guard_reason(base + " nope") is not None)
-    check("guard allows scratch file", guard_reason(fa) is None,
-          guard_reason(fa) or "")
-
-    # Single file: to the bin, findable, restorable.
-    send_to_bin(fa)
-    check("file deleted", not os.path.exists(fa))
-    pair = find_in_bin(fa)
-    check("file present in the bin", pair is not None)
-    if pair:
-        restore_pair(fa, pair[0], pair[1], attrs=0x20)
-        check("file restored", os.path.exists(fa))
-        with open(fa) as f:
-            check("content intact", f.read() == "alpha")
-
-    # Whole directory.
-    send_to_bin(os.path.join(base, "sub"))
-    check("dir deleted", not os.path.exists(fb))
-    pair = find_in_bin(os.path.join(base, "sub"))
-    check("dir present in the bin", pair is not None)
-    if pair:
-        restore_pair(os.path.join(base, "sub"), pair[0], pair[1])
-        check("dir restored with file", os.path.exists(fb))
-
-    # Manifest round trip through run_batch's real path is covered by the
-    # viewer flow; here prove restore_manifest on a hand-run mini batch.
-    db = connect(os.path.join(DATA_DIR, "inventory.sqlite3"))
-    sid = db.execute("SELECT MAX(id) FROM snapshots WHERE complete=1").fetchone()[0]
-    db.execute("INSERT INTO decisions (path, choice, decided_at) VALUES (?,?,?)"
-               " ON CONFLICT(path) DO UPDATE SET choice='delete', decided_at=?",
-               (fa, "delete", time.time(), time.time()))
-    db.commit()
-    res = run_batch(db, sid)
-    check("batch ran", res.get("ok"), res.get("error", ""))
-    check("manifest written", bool(res.get("manifest"))
-          and os.path.exists(res["manifest"]))
-    check("file in bin after batch", not os.path.exists(fa)
-          and find_in_bin(fa) is not None)
-    if res.get("manifest"):
-        restored = restore_manifest(res["manifest"])
-        check("manifest restore", all(r["restored"] for r in restored)
-              and os.path.exists(fa), str(restored))
-    db.execute("DELETE FROM decisions WHERE path=?", (fa,))
-    db.commit()
-    db.close()
-
     try:
-        os.remove(fa)
-        os.remove(fb)
-        os.rmdir(os.path.join(base, "sub"))
-        os.rmdir(base)
-    except OSError:
-        pass
+        os.makedirs(os.path.join(base, "sub"))
+        with open(fa, "w") as f:
+            f.write("alpha")
+        with open(fb, "w") as f:
+            f.write("beta" * 1000)
+
+        # Guard refuses the never-touch list, allows the scratch file.
+        check("guard refuses C:\\Windows",
+              guard_reason(r"C:\Windows") is not None)
+        check("guard refuses hiberfil",
+              guard_reason(r"C:\hiberfil.sys") is not None)
+        check("guard refuses ProgramData subtree",
+              guard_reason(r"C:\ProgramData\x") is not None)
+        check("guard refuses the tool itself",
+              guard_reason(os.path.join(HERE, "app.py")) is not None)
+        check("guard refuses nonexistent",
+              guard_reason(base + " nope") is not None)
+        check("guard allows scratch file", guard_reason(fa) is None,
+              guard_reason(fa) or "")
+
+        # Single file: to the bin, findable, restorable.
+        send_to_bin(fa)
+        check("file deleted", not os.path.exists(fa))
+        pair = find_in_bin(fa)
+        check("file present in the bin", pair is not None)
+        if pair:
+            restore_pair(fa, pair[0], pair[1], attrs=0x20)
+            check("file restored", os.path.exists(fa))
+            with open(fa) as f:
+                check("content intact", f.read() == "alpha")
+
+        # Whole directory.
+        send_to_bin(os.path.join(base, "sub"))
+        check("dir deleted", not os.path.exists(fb))
+        pair = find_in_bin(os.path.join(base, "sub"))
+        check("dir present in the bin", pair is not None)
+        if pair:
+            restore_pair(os.path.join(base, "sub"), pair[0], pair[1])
+            check("dir restored with file", os.path.exists(fb))
+
+        # The whole loop through run_batch and the manifest it writes.
+        db = connect(os.path.join(DATA_DIR, "inventory.sqlite3"))
+        sid = db.execute(
+            "SELECT MAX(id) FROM snapshots WHERE complete=1").fetchone()[0]
+        db.execute("INSERT INTO decisions (path, choice, decided_at)"
+                   " VALUES (?,?,?) ON CONFLICT(path) DO UPDATE SET"
+                   " choice='delete', decided_at=?",
+                   (fa, "delete", time.time(), time.time()))
+        db.commit()
+        res = run_batch(db, sid)
+        check("batch ran", res.get("ok"), res.get("error", ""))
+        check("manifest written", bool(res.get("manifest"))
+              and os.path.exists(res["manifest"]))
+        check("file in bin after batch", not os.path.exists(fa)
+              and find_in_bin(fa) is not None)
+        if res.get("manifest"):
+            restored = restore_manifest(res["manifest"])
+            check("manifest restore", all(r["restored"] for r in restored)
+                  and os.path.exists(fa), str(restored))
+    finally:
+        if db is not None:
+            db.execute("DELETE FROM decisions WHERE path=?", (fa,))
+            db.commit()
+            db.close()
+        shutil.rmtree(base, ignore_errors=True)
+
     print("")
     print("self-test %s" % ("PASSED" if ok else "FAILED"))
     return 0 if ok else 1
