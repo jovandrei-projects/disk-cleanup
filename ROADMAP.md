@@ -46,7 +46,7 @@ permanent data loss, not a wasted afternoon.
 - [x] `git init`, `.gitignore` excluding the scan database, snapshots and reports
 - [x] `AGENTS.md` for this repo: the ground rules above, the machine's specifics, the never-touch list
 - [x] Confirm the tool runs against `C:\Python311\python.exe` with stdlib only
-- [ ] Decide whether this repo is private on GitHub or local-only (it will contain a full map of your filesystem)
+- [x] Decide whether this repo is private on GitHub or local-only - answered 2026-09-27: pushed to `github.com/jovandrei/disk-cleanup`, visibility PRIVATE
 
 ## Phase 1 - Inventory scanner
 
@@ -63,13 +63,13 @@ re-walking the disk. Delivered as `scan.py`; snapshot 1 in
 - [x] Sanity check: 773.9 GB on disk against the 794.3 GB Windows reports, 97.4% accounted for
 - [x] Verify the rollup arithmetic, not just its plausibility: root subtree totals equal the sums over the `files` table. `--verify` asserts this and reports OK
 - [x] Confirm scanning does not hydrate OneDrive placeholders - free space unchanged across a scan of `Documentos` apart from the growth of the scan database itself
-- [ ] Re-run elevated to close the remaining gap. 603 of 607 errors are permission denials, 511 of them in `ProgramData\Microsoft\Windows`. Only 3 touch user data, so this is a completeness matter, not a blocker
-- [ ] Measure `System Volume Information` (restore points and shadow copies), which is on the skip list and is likely most of the gap. Needs `vssadmin list shadowstorage` elevated. Genuinely reclaimable, so worth knowing
+- [x] Re-run elevated - done 2026-09-28, snapshot 3. Errors drop 607 -> 11 (the rest are deliberately skip-listed or locked even to admin); unaccounted drops 23.7 GB -> 5.5 GB. `ProgramData` now reads at 9.0 GB and `Users` grows to 327.2 GB on disk
+- [x] Measure `System Volume Information`: `vssadmin list shadowstorage` elevated says **16.7 GB used / 19.1 GB max** for restore points and shadow copies - the rest of the gap. Reclaimable via System Protection settings, not by deleting files
 
-**Status line (updated 2026-09-26):** snapshot 2 is current - 699.4 GB on disk,
-723.1 GB used per Windows. The user already deleted `Escritorio\Hikaru no Go`
-(66.9 GB) by hand; the refresh verified it is gone and the baseline total now
-reflects it.
+**Status line (updated 2026-09-28):** snapshot 3 is current - elevated,
+727.9 GB on disk, 1,042,687 files, 11 errors, 219.4 GB free of 952.8 GB.
+Supersedes snapshot 2 (non-elevated): `ProgramData`, other profiles and the
+locked corners of `Windows` are now measured.
 
 ### What Phase 1 found
 
@@ -224,8 +224,8 @@ Structure, not space.
 
 - [ ] Agree the taxonomy for `OneDrive\Documentos`: what the `_*` folders mean and what belongs in each
 - [ ] Decide what to do about apps writing into `Documentos` uninvited (MuseScore4, Scanned Documents, Sound Recordings, StarCraft II) - redirect them or accept and quarantine them under one folder
-- [ ] Settle the canonical home for code: pick **one** of the three copies of the singing project (`OneDrive\Documentos\_Personal\Clases canto\Tools`, `E:\Projects`, `C:\Projects`) and retire the others. Confirm with git which has the newest commits before choosing
-- [ ] Resolve `E:\Projects` - it is on the Switch SD card. Move `HomeNetworkMonitor` somewhere real, retire the duplicate copy, strip the macOS `._*` files
+- [ ] Settle the canonical home for code: user declared 2026-09-27 that `C:\Projects` has the latest history. `E:\Projects` is already gone; what remains is deciding whether to retire the `OneDrive\Documentos\_Personal\Clases canto\Tools` copy (it still holds ~400 MB the repo does not - VocalCoach test audio, transcription tools)
+- [x] Resolve `E:\Projects` - resolved 2026-09-27 by the user deleting the folder off the SD card. `HomeNetworkMonitor` was already at `C:\Projects\HomeNetworkMonitor` (93 files, git repo); the singing-tools duplicate is gone with it
 - [ ] Update the singing project's `AGENTS.md` when its path changes, since the old path is documented in it
 - [ ] Get large media off `OneDrive\Escritorio` and out of the Desktop tree - 66.9 GB of video on the Desktop is both a sync cost and a clutter problem
 - [ ] Work out what `Users\andry\Videos\history\_has_content` is (54.7 GB in 72 files). It is also one of the odd entries in the Explorer sidebar, so the two questions are probably the same question

@@ -32,11 +32,13 @@ and shown in the viewer with a one-line reason. All ten kinds now exist.
 
 ## Deferred or blocked
 
-- **`E:\Projects` vs `Clases canto\Tools` comparison** - the SD card is not
-  mounted, so the specific pair can't be checked. Generic C:-resident tree
-  dups work and found the real cases (e.g. the copilot `website` copy, Zoom
-  `Emojis` x2). Re-run `analyze.py --trees` after scanning `E:\Projects`
-  when the card is back.
+- Nothing open. Snapshot 3 (elevated, 2026-09-28) is current; dup sets and
+  tree proofs were recomputed against it (2,993 sets, 147 proven groups).
+
+- ~~**`E:\Projects` vs `Clases canto\Tools` comparison**~~ - resolved
+  2026-09-27: the user deleted `E:\Projects` off the SD card, so the
+  duplicate no longer exists. `HomeNetworkMonitor` (the other project that
+  lived there) already had a copy at `C:\Projects\HomeNetworkMonitor`.
 - **`analyze.py --dupes` must be re-run after a refresh** - the viewer
   warns when `computed_for` differs from the loaded snapshot.
 

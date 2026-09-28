@@ -24,13 +24,10 @@ full candidate list in front of it and the user's marks behind it.
 
 Open work that exists but has no folder, so nobody has to go looking for it:
 
-- **Elevated rescan** - 603 of 607 scan errors are permission denials, 511 of
-  them in `ProgramData\Microsoft\Windows`. Needs an elevated shell, i.e. the
-  user starting it. See `ROADMAP.md` Phase 1.
-- **`E:\Projects` tree-dup check** - the Switch SD card was not mounted on
-  2026-09-27, so the known singing-tools copy there is unverified. When it
-  returns: `scan.py --root E:\Projects` into the same DB, then
-  `analyze.py --trees`. See `analysis-passes/STATE.md`.
+- ~~**Elevated rescan**~~ - done 2026-09-28, snapshot 3 (elevated). Numbers
+  and the `vssadmin` result are in `ROADMAP.md` Phase 1.
+- ~~**`E:\Projects` tree-dup check**~~ - resolved 2026-09-27: the user
+  deleted the folder off the SD card; nothing left to compare.
 - **`System Volume Information`** - restore points and shadow copies, likely
   most of the gap between the scan total and what Windows reports. Measured
   with `vssadmin list shadowstorage`, elevated. Genuinely reclaimable.

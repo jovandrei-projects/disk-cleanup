@@ -12,6 +12,7 @@ new input, so the column to watch is **new input**.
 |---|---|---|---|---|
 | `agent-workspace-setup` (workspace created, 2 tasks filed, no code) | n/a | n/a | n/a | n/a |
 | `analysis-passes` (dup hashes, tree sigs, software tab; task done minus blocked E: check) | n/a | n/a | n/a | n/a |
+| queue review + elevated rescan (snapshot 3), dup recompute, E:/GitHub items resolved | n/a | n/a | n/a | n/a |
 
 If the figures are not available at the end of a session, write the row with
 the counts left as `n/a` rather than skipping it, so the session is still
