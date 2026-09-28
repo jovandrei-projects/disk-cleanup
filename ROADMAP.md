@@ -66,10 +66,11 @@ re-walking the disk. Delivered as `scan.py`; snapshot 1 in
 - [x] Re-run elevated - done 2026-09-28, snapshot 3. Errors drop 607 -> 11 (the rest are deliberately skip-listed or locked even to admin); unaccounted drops 23.7 GB -> 5.5 GB. `ProgramData` now reads at 9.0 GB and `Users` grows to 327.2 GB on disk
 - [x] Measure `System Volume Information`: `vssadmin list shadowstorage` elevated says **16.7 GB used / 19.1 GB max** for restore points and shadow copies - the rest of the gap. Reclaimable via System Protection settings, not by deleting files
 
-**Status line (updated 2026-09-28):** snapshot 3 is current - elevated,
-727.9 GB on disk, 1,042,687 files, 11 errors, 219.4 GB free of 952.8 GB.
-Supersedes snapshot 2 (non-elevated): `ProgramData`, other profiles and the
-locked corners of `Windows` are now measured.
+**Status line (updated 2026-09-28):** snapshot 4 is current - elevated,
+730.6 GB on disk, 1,050,794 files, 11 errors. Refresh of `C:\Projects` on
+top of snapshot 3 (elevated, 727.9 GB, 1,042,687 files) - which itself
+superseded non-elevated snapshot 2 by measuring `ProgramData`, other
+profiles and the locked corners of `Windows`.
 
 ### What Phase 1 found
 

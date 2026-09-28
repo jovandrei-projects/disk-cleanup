@@ -256,7 +256,7 @@ def restore_pair(path, ipath, rpath, attrs=None):
 
 def empty_bin(drive="C:\\"):
     """Empty the Recycle Bin. Permanent - the Bin cannot go into the Bin."""
-    hr = _sh32.SHEmptyRecycleBinW(None, wintypes.LPCWSTR(drive + "$Recycle.Bin"),
+    hr = _sh32.SHEmptyRecycleBinW(None, wintypes.LPCWSTR(drive),
                                   0x1 | 0x2 | 0x4)  # no confirm/progress/sound
     if hr not in (0, 0x80070002):  # S_OK, or already empty
         raise OSError(hr, "SHEmptyRecycleBinW failed")
