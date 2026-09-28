@@ -13,7 +13,7 @@ Conventions for `STATE.md` are in `README.md`; the template is in `_template/`.
 |---|---|---|---|---|
 | 0 | Agent handoff and context workspace | done | `agent-workspace-setup/` | — |
 | 1 | Analysis passes: duplicates, duplicate trees, software inventory | done | `analysis-passes/` | — |
-| 2 | Reclaim space: marked decisions to the Recycle Bin, logged | next | `reclaim-space/` | 1, user review |
+| 2 | Reclaim space: marked decisions to the Recycle Bin, logged | in progress | `reclaim-space/` | 1, user review |
 
 The order is intended, not binding. 1 finishes what `analyze.py` started -
 the Phase 3 checklist in `ROADMAP.md` has three candidate kinds no code
@@ -28,14 +28,15 @@ Open work that exists but has no folder, so nobody has to go looking for it:
   and the `vssadmin` result are in `ROADMAP.md` Phase 1.
 - ~~**`E:\Projects` tree-dup check**~~ - resolved 2026-09-27: the user
   deleted the folder off the SD card; nothing left to compare.
-- **`System Volume Information`** - restore points and shadow copies, likely
-  most of the gap between the scan total and what Windows reports. Measured
-  with `vssadmin list shadowstorage`, elevated. Genuinely reclaimable.
+- ~~**`System Volume Information`**~~ - measured 2026-09-28 via `vssadmin`:
+  16.7 GB used / 19.1 GB max in shadow copies. Genuinely reclaimable, but
+  only through Windows System Protection settings - a user decision, not a
+  file deletion.
 - **Treemap view** - deferred in `ROADMAP.md` Phase 2; the bar-in-cell tables
   answer "what is big here" well enough that this is decoration until proven
   otherwise.
-- **GitHub private vs local-only** - user decision; this repository maps the
-  whole filesystem.
+- ~~**GitHub private vs local-only**~~ - resolved 2026-09-28: the repo at
+  `github.com/jovandrei/disk-cleanup` is confirmed PRIVATE, `origin` set.
 - **Phase 5 (reorganize) and Phase 6 (keep it that way)** - their checklists
   live in `ROADMAP.md`. Phase 5 is mostly user decisions (folder taxonomy,
   which copy of the singing project survives) and Phase 6 waits on Phase 4.

@@ -14,15 +14,18 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 import analyze
+import reclaim
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
@@ -337,6 +340,28 @@ class Store:
             (path, choice, time.time()))
         self.conn.commit()
         self._cache.pop("candidates", None)
+        self._cache.pop("reclaim", None)
+
+    def proposed_batch(self):
+        """What the current 'delete' marks would do if run: per-path verdicts,
+        the Recycle Bin's own footprint, and past batches."""
+        plan = reclaim.propose(self.conn, self.sid)
+        plan["bin"] = reclaim.recycle_bin_size(self.conn, self.sid)
+        plan["manifests"] = reclaim.list_manifests()
+        return plan
+
+    def reload(self):
+        """Pick up a snapshot created after this process started (a refresh),
+        and drop every cached aggregate so views compute against it."""
+        row = self.conn.execute(
+            "SELECT * FROM snapshots WHERE complete=1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return
+        self.snap = dict(row)
+        self.sid = self.snap["id"]
+        self._cache = {}
+        self.warm()
 
     def empty_dirs(self, limit=500):
         # "Topmost" empty branches: the folder itself holds nothing anywhere
@@ -438,6 +463,12 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/decisions":
                 return self.send_json({"decisions": s.q(
                     "SELECT path, choice, decided_at FROM decisions")})
+            if u.path == "/api/reclaim":
+                # Always fresh: a deletion proposal is a few rows and must
+                # never lag behind the marks it acts on.
+                return self.send_json(s.proposed_batch())
+            if u.path == "/api/refresh_status":
+                return self.send_json(REFRESH)
             if u.path == "/api/reveal":
                 return self.send_json(reveal(qs.get("path", "")))
             self.send_error(404)
@@ -446,19 +477,80 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path != "/api/decide":
-            return self.send_error(404)
         try:
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
-            path = (body.get("path") or "").strip()
-            choice = (body.get("choice") or "").strip()
-            if not path or choice not in ("keep", "delete", "archive", "unsure"):
-                return self.send_json({"error": "bad decision"}, 400)
-            self.store.decide(path, choice)
-            self.send_json({"ok": True})
+            s = self.store
+            if u.path == "/api/decide":
+                path = (body.get("path") or "").strip()
+                choice = (body.get("choice") or "").strip()
+                if not path or choice not in ("keep", "delete", "archive",
+                                              "unsure"):
+                    return self.send_json({"error": "bad decision"}, 400)
+                s.decide(path, choice)
+                return self.send_json({"ok": True})
+            if u.path == "/api/reclaim":
+                out = reclaim.run_batch(s.conn, s.sid)
+                s._cache.pop("reclaim", None)
+                return self.send_json(out)
+            if u.path == "/api/restore":
+                batch = body.get("batch") or ""
+                if not re.fullmatch(r"batch-[\d-]+", batch):
+                    return self.send_json({"error": "bad batch id"}, 400)
+                mpath = os.path.join(reclaim.MANIFEST_DIR, batch + ".jsonl")
+                if not os.path.isfile(mpath):
+                    return self.send_json({"error": "no such manifest"}, 404)
+                s._cache.pop("reclaim", None)
+                return self.send_json({"results": reclaim.restore_manifest(mpath)})
+            if u.path == "/api/emptybin":
+                out = reclaim.empty_bin_logged()
+                s._cache.pop("reclaim", None)
+                return self.send_json(out)
+            if u.path == "/api/refresh":
+                paths = body.get("paths") or []
+                if not isinstance(paths, list) or not all(
+                        isinstance(p, str) for p in paths) or len(paths) > 20:
+                    return self.send_json({"error": "bad path list"}, 400)
+                return self.send_json(start_refresh(paths))
+            if u.path == "/api/reload":
+                s.reload()
+                return self.send_json({"ok": True, "snapshot": s.sid})
+            self.send_error(404)
         except Exception as exc:
             self.send_json({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
+
+
+# Refreshing a subtree takes about a minute each, so it runs off-thread and
+# the UI polls /api/refresh_status. A refresh appends a new snapshot; the views
+# keep serving the old one until /api/reload re-reads the table.
+REFRESH = {"running": False, "queue": [], "done": [], "started_at": None}
+
+
+def start_refresh(paths):
+    if REFRESH["running"]:
+        return {"ok": False, "error": "a refresh is already running"}
+    REFRESH.update(running=True, queue=list(paths), done=[],
+                   started_at=time.time())
+    threading.Thread(target=_refresh_worker, daemon=True).start()
+    return {"ok": True, "queued": len(paths)}
+
+
+def _refresh_worker():
+    log_path = os.path.join(HERE, "data", "refresh.log")
+    try:
+        while REFRESH["queue"]:
+            p = REFRESH["queue"][0]
+            with open(log_path, "ab") as log:
+                log.write(("\n=== %s  %s ===\n" % (
+                    p, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
+                log.flush()
+                subprocess.run(
+                    [sys.executable, os.path.join(HERE, "scan.py"),
+                     "--refresh", p],
+                    cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+            REFRESH["done"].append(REFRESH["queue"].pop(0))
+    finally:
+        REFRESH["running"] = False
 
 
 def reveal(path):

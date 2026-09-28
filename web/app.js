@@ -40,6 +40,17 @@ async function api(path) {
   return j;
 }
 
+async function apiPost(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+
 function revealBtn(path) {
   return '<button class="reveal" title="show in Explorer" data-reveal="' +
     esc(path) + '">&#9656;</button>';
@@ -62,6 +73,7 @@ const view = document.getElementById("view");
 
 const TABS = [
   ["recommended", "Recommended"],
+  ["reclaim", "Reclaim"],
   ["folders", "Folders"],
   ["types", "File types"],
   ["age", "Age"],
@@ -624,6 +636,166 @@ async function renderRecommended() {
     view.querySelectorAll("details.tdir").forEach(x => x.open = false);
 }
 
+// ------------------------------------------------------------------ reclaim
+//
+// Phase 4. The 'delete' marks from Recommended become a batch here: each path
+// is checked against the never-touch list, then moved to the Recycle Bin and
+// logged to a manifest under data/manifests/. Nothing runs from this page
+// loading; the only way anything moves is the button, and even that aborts the
+// whole batch if any mark is refused.
+
+let LAST_BATCH = null;
+
+async function renderReclaim() {
+  busy();
+  const [d, rst] = await Promise.all([
+    api("/api/reclaim"), api("/api/refresh_status")]);
+  const refused = d.entries.filter(e => e.guard);
+
+  const status = e => e.guard
+    ? '<span class="tag empty">refused: ' + esc(e.guard) + "</span>"
+    : e.src === "missing"
+      ? '<span class="tag">not in snapshot - size unknown</span>'
+      : '<span class="tag regen">will recycle</span>';
+
+  const max = Math.max(...d.entries.map(x => x.bytes_disk), 1);
+  const erows = d.entries.map(e => {
+    const a = age(e.mtime);
+    return "<tr>" +
+      '<td class="name">' + esc(e.path) +
+        (e.cloud_only ? ' <span class="tag cloud">cloud only - frees quota, not disk</span>' : "") +
+        (e.bytes_cloud ? ' <span class="tag cloud">' + size(e.bytes_cloud) + " cloud inside</span>" : "") +
+      "</td>" +
+      barCell(e.bytes_disk, max) +
+      '<td class="num">' + (e.n_files > 1 ? e.n_files.toLocaleString() : "") + "</td>" +
+      '<td class="num ' + a.cls + '">' + a.text + "</td>" +
+      "<td>" + status(e) + "</td>" +
+      "<td>" + revealBtn(e.path) +
+        ' <a href="#" data-unmark="' + esc(e.path) + '">unmark</a></td></tr>';
+  }).join("");
+
+  const mrows = d.manifests.map(m => {
+    const label = m.items ? m.ok + "/" + m.items + " recycled" : "bin emptied";
+    return "<tr>" +
+      '<td class="name">' + esc(m.batch) + "</td>" +
+      '<td class="num">' + label + "</td>" +
+      '<td class="num">' + (m.freed == null ? "" : size(m.freed)) + "</td>" +
+      "<td>" + (m.items
+        ? '<a href="#" data-restore="' + esc(m.batch) + '">restore</a>'
+        : '<span class="tag">permanent</span>') + "</td></tr>";
+  }).join("");
+
+  const last = LAST_BATCH
+    ? '<h3 style="margin:20px 0 6px;font-size:13px">Last batch: ' +
+      esc(LAST_BATCH.batch || "not run") + "</h3>" +
+      '<p class="hint">' + (LAST_BATCH.ok
+        ? "Freed " + size(LAST_BATCH.freed) + ". Manifest: " +
+          esc(LAST_BATCH.manifest) + "."
+        : esc(LAST_BATCH.error || "did not run")) + "</p>" +
+      table(["Path", "Result"], LAST_BATCH.results
+        ? LAST_BATCH.results.map(r => "<tr><td class=\"name\">" + esc(r.path) +
+            "</td><td>" + (r.ok ? (LAST_BATCH.restore ? "restored" : "recycled")
+                              : "FAILED: " + esc(r.error)) +
+            "</td></tr>").join("")
+        : "") +
+      (LAST_BATCH.ok && LAST_BATCH.parents.length
+        ? '<div class="controls"><button id="refreshnow">update the snapshot ' +
+          "(" + LAST_BATCH.parents.length + " subtree" +
+          (LAST_BATCH.parents.length > 1 ? "s" : "") + ")</button>" +
+          '<span class="path">runs scan.py --refresh on ' +
+          LAST_BATCH.parents.map(esc).join(", ") + "</span></div>"
+        : "")
+    : "";
+
+  const refreshLine = rst.running
+    ? '<div class="note">Refreshing the snapshot: ' +
+      rst.done.length + " of " + (rst.done.length + rst.queue.length) +
+      " done. Takes about a minute per subtree.</div>"
+    : (rst.done.length
+      ? '<div class="note">Refresh finished. <a href="#" id="reloadsnap">' +
+        "Load the new snapshot</a> to see the freed space here.</div>"
+      : "");
+
+  view.innerHTML =
+    '<div class="note">This is where marks become deletions. Paths marked ' +
+    '<b>delete</b> on the Recommended tab are listed here; pressing the button ' +
+    "sends them to the <b>Recycle Bin</b> and writes a manifest under " +
+    "<code>data/manifests/</code> so the batch can be put back. The " +
+    "never-touch list is enforced before anything moves \u2014 a batch that " +
+    "contains a protected path refuses entirely.</div>" +
+    '<div class="cards">' +
+      card(d.entries.length.toLocaleString(), "marked for deletion") +
+      card(size(d.total_disk), "would free on disk") +
+      card(refused.length.toLocaleString(), "refused by the guard") +
+      card(size(d.bin.bytes), "in the Recycle Bin") +
+    "</div>" +
+    refreshLine +
+    '<h3 style="margin:8px 0;font-size:13px">Proposed batch</h3>' +
+    (d.entries.length
+      ? table(["Path", "On disk", "Files", "Modified", "Status", ""], erows)
+      : '<p class="hint">Nothing is marked for deletion. Tick candidates on ' +
+        'the <a href="#" data-tab="recommended">Recommended</a> tab first.</p>') +
+    '<div class="controls">' +
+      '<button id="runbatch"' + (d.can_run ? "" : " disabled") +
+        ">send to the Recycle Bin</button>" +
+      '<span class="path">' +
+        (d.can_run
+          ? d.actionable + " item" + (d.actionable === 1 ? "" : "s") +
+            ", " + size(d.total_disk)
+          : refused.length
+            ? "blocked - unmark the refused rows first"
+            : "nothing to run") +
+      "</span></div>" +
+    '<h3 style="margin:20px 0 6px;font-size:13px">The Recycle Bin itself</h3>' +
+    '<div class="controls"><button id="emptybin"' +
+      (d.bin.bytes ? "" : " disabled") + ">empty it permanently</button>" +
+      '<span class="path">' + d.bin.files.toLocaleString() + " items, " +
+      size(d.bin.bytes) + " \u2014 permanent, already deleted once</span></div>" +
+    last +
+    '<h3 style="margin:20px 0 6px;font-size:13px">Batch history</h3>' +
+    (mrows
+      ? table(["Batch", "Items", "Freed", ""], mrows)
+      : '<p class="hint">No manifests yet.</p>');
+
+  const rb = document.getElementById("runbatch");
+  if (rb) rb.onclick = async () => {
+    if (!confirm("Send " + d.actionable + " marked item(s) to the Recycle Bin?"))
+      return;
+    try {
+      LAST_BATCH = await apiPost("/api/reclaim");
+    } catch (e2) {
+      LAST_BATCH = { batch: "", ok: false, error: e2.message,
+                     results: null, parents: [] };
+    }
+    renderReclaim();
+  };
+  const eb = document.getElementById("emptybin");
+  if (eb) eb.onclick = async () => {
+    if (!confirm("Empty the Recycle Bin? This is permanent.")) return;
+    await apiPost("/api/emptybin");
+    renderReclaim();
+  };
+  const rf = document.getElementById("refreshnow");
+  if (rf) rf.onclick = async () => {
+    await apiPost("/api/refresh", { paths: LAST_BATCH.parents });
+    // Poll until the background refresh finishes, then offer the reload.
+    const poll = setInterval(async () => {
+      const s = await api("/api/refresh_status");
+      if (!s.running) { clearInterval(poll); renderReclaim(); }
+    }, 3000);
+    renderReclaim();
+  };
+  const rl = document.getElementById("reloadsnap");
+  if (rl) rl.onclick = async () => {
+    rl.textContent = "reloading...";
+    await apiPost("/api/reload");
+    SNAP = await api("/api/snapshot");
+    DIR_ID = SNAP.root_id;
+    renderHeader();
+    renderReclaim();
+  };
+}
+
 // ------------------------------------------------------------------ software
 
 async function renderSoftware() {
@@ -703,6 +875,7 @@ async function renderSearch(term) {
 
 const RENDER = {
   recommended: renderRecommended,
+  reclaim: renderReclaim,
   folders: renderFolders, types: renderTypes, age: renderAge,
   biggest: renderBiggest, video: renderVideo, empty: renderEmpty,
   software: renderSoftware,
@@ -740,6 +913,33 @@ document.addEventListener("click", e => {
     fetch("/api/reveal?path=" + encodeURIComponent(rev.dataset.reveal))
       .then(r => r.json())
       .then(j => { if (!j.ok) alert("Could not open: " + (j.error || "unknown")); });
+    return;
+  }
+
+  const un = e.target.closest("[data-unmark]");
+  if (un) {
+    e.preventDefault();
+    apiPost("/api/decide", { path: un.dataset.unmark, choice: "unsure" })
+      .then(() => renderReclaim());
+    return;
+  }
+
+  const rst = e.target.closest("[data-restore]");
+  if (rst) {
+    e.preventDefault();
+    if (!confirm("Restore batch " + rst.dataset.restore + " from the Recycle Bin?"))
+      return;
+    apiPost("/api/restore", { batch: rst.dataset.restore })
+      .then(j => {
+        LAST_BATCH = {
+          batch: rst.dataset.restore + " (restore)", ok: true, restore: true,
+          freed: 0, manifest: "", parents: [],
+          results: j.results.map(r => ({
+            path: r.path, ok: r.restored, error: r.error || "not restored",
+          })),
+        };
+        renderReclaim();
+      });
   }
 });
 

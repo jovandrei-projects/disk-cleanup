@@ -1,7 +1,7 @@
 # Task: Reclaim space - marked decisions become deletions, reversibly
 
-**Status:** next
-**Started:** —   **Last touched:** 2026-09-26 (filed, not started)
+**Status:** in progress
+**Started:** 2026-09-28   **Last touched:** 2026-09-28
 
 ## Objective
 
@@ -39,18 +39,35 @@ goes - that is the user's job, always; the video decision in particular.
 
 ### Phase 1 - The delete primitive
 
-- [ ] Recycle-Bin send for a single path, round-tripped on a scratch file:
-      deleted, present in the bin, restorable
-- [ ] Refusal check against the never-touch list, exercised on purpose
-- [ ] Manifest writer; a batch with no manifest does not execute
+- [x] Recycle-Bin send for a single path, round-tripped on a scratch file:
+      deleted, present in the bin, restorable. `reclaim.py --self-test` is
+      the proof. Implementation: `SHFileOperationW` with `FOF_ALLOWUNDO`;
+      restore moves the `$R` payload back and drops the `$I` record
+      (locale-proof, no shell verbs). Gotcha found and fixed: the pair lands
+      in `$Recycle.Bin` a beat *after* the delete call returns, so
+      `find_in_bin` retries for 3 s.
+- [x] Refusal check against the never-touch list, exercised on purpose:
+      `guard_reason` covers the system prefixes/files, the Switch SD
+      folders, this tool's own directory, missing paths, and AppData of a
+      running app (exe-path prefix or process-name match, conservative).
+- [x] Manifest writer; a batch with no manifest does not execute. JSONL in
+      `data/manifests/`; the file is opened and a header written *before*
+      the first delete, and a batch containing any refused path aborts
+      untouched.
 
 ### Phase 2 - Drive it from decisions
 
-- [ ] The `decisions` table's `delete` marks become a proposed batch the
-      user confirms in the viewer - nothing is deleted from a list alone
-- [ ] After each batch: `scan.py --refresh` on the parents, GB recovered
-      recorded in `ROADMAP.md` Phase 4
-- [ ] `test_render.js` case for whatever the batch UI is
+- [x] The `decisions` table's `delete` marks become a proposed batch the
+      user confirms in the viewer - nothing is deleted from a list alone.
+      Reclaim tab: per-path verdict (will recycle / refused+reason / not in
+      snapshot), unmark button, one confirm, then `POST /api/reclaim`.
+- [x] After each batch: `scan.py --refresh` on the parents -
+      `POST /api/refresh` runs them on a background thread over the minimal
+      covering-parent set (`data/refresh.log`), `/api/reload` then picks up
+      the new snapshot. GB freed is measured per batch (`freed` in the
+      manifest); recording real numbers into ROADMAP Phase 4 happens when
+      Phase 3 batches run.
+- [x] `test_render.js` case for the batch UI (`reclaim`).
 
 ### Phase 3 - The batches themselves, with the user
 
@@ -62,16 +79,20 @@ goes - that is the user's job, always; the video decision in particular.
 
 ## Where it stopped
 
-Not started. The real batches wait on `analysis-passes/` and the user's
-review; the Phase 1 primitive does not - it can be built and proven on
-scratch files in a test folder without touching a real target.
+Phases 1-2 built and verified 2026-09-28: `reclaim.py` (primitive, guard,
+manifest, CLI), a Reclaim tab in the viewer, and endpoints
+`/api/reclaim|restore|emptybin|refresh|refresh_status|reload`. End-to-end
+proven over HTTP: mark a scratch file, POST recycle it, manifest written,
+restore brings it back. `reclaim.py --self-test` is green; `test_render.js`
+has a `reclaim` case and is green. Nothing real has been deleted.
 
 ## Deferred or blocked
 
-Phase 3 is blocked on the user's review of the candidate lists. Phases 1
-and 2 are not.
+Phase 3 is blocked on the user's review of the candidate lists - marks are
+the input and only three `unsure` marks exist so far.
 
 ## Verification
 
-A created test file goes to the bin and back via the manifest; `python
-scan.py --verify` still OK; the three-command gate in `AGENTS.md`.
+`python reclaim.py --self-test` (scratch round trip), the three-command
+gate in `AGENTS.md`, plus a live POST/restore round trip against a running
+`app.py`.

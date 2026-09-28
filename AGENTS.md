@@ -146,6 +146,12 @@ use `;`.
     only empty folders is one decision; reporting each leaf produced 95k rows,
     70k of them inside `WinSxS\Temp`. The right query is "subtree with zero
     files whose parent is not itself empty", grouped by parent.
+12. **The Recycle Bin's `$I`/`$R` pair lags the delete call.** `SHFileOperationW`
+    returns before the bin entry is visible to `os.scandir`, so a lookup right
+    after a delete misses intermittently. `reclaim.find_in_bin` retries for
+    3 s - do not shorten that. The pair is also how restore works: `$I` holds
+    the original path UTF-16LE, `$R` holds the data; moving `$R` back and
+    dropping `$I` restores without the shell's localized verbs.
 
 ## Running things
 
@@ -174,6 +180,22 @@ python analyze.py --software        print the installed-software inventory
 
 A snapshot is immutable once complete; refreshes append a new one that chains
 via `snapshots.refresh_of`/`refresh_path`, so any two snapshots can be diffed.
+
+The reclaim machinery (the only code allowed to change the disk):
+
+```
+python reclaim.py --self-test     round-trip scratch files through the bin
+python reclaim.py --propose       show the batch the current delete marks imply
+python reclaim.py --run --yes     execute it (manifest first, then Recycle Bin)
+python reclaim.py --restore FILE  put back what a manifest recycled
+python reclaim.py --empty-bin --yes   empty the Recycle Bin itself (permanent)
+```
+
+The viewer's Reclaim tab does the same through `POST /api/reclaim`, then
+`POST /api/refresh` rescanning the covering parents on a background thread and
+`POST /api/reload` loading the new snapshot. The never-touch list is enforced
+in `reclaim.guard_reason`; a batch containing a refused path aborts before
+touching anything.
 
 Verify a scan before building on it. `--verify` checks the rollup invariant -
 the root's subtree totals against the sums over `files` - and prints where the
