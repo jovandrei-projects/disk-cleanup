@@ -203,13 +203,31 @@ Read-only. Produces ranked candidate lists, deletes nothing.
 
 ## Phase 4 - Reclaim space
 
-First phase that changes anything. Smallest-risk, highest-GB first.
+First phase that changes anything. Order set with the user 2026-09-28:
+bundled removals first - an uninstall takes its folders with it - then the
+granular passes. Video stays last; it is a decision, not a cleanup.
 
 - [ ] Review the Phase 3 lists together and mark keep / delete / archive
-- [ ] Reclaim the zero-risk tier first: empty the Recycle Bin (3.7 GB), caches, temp, regenerable build output, old Windows Update files
-- [ ] Stale emulator and VM images (~15 GB, untouched 2.5+ years, recreatable)
-- [ ] Then installers and finished downloads
-- [ ] Then duplicates, keeping one canonical copy each
+- [ ] **Apps**, through Add/Remove Programs from the ranked Software tab list.
+      Prime candidates are the ones untouched 2.5+ years (install-dir mtime):
+      Steam games (~12 GB), the benchmark suite (~3 GB), GIMP, OBS, Battle.net,
+      both Visual Studios, Plex client; plus the Android toolchain (~20 GB
+      with SDK images and AVDs) and Google Play Games (~5.4 GB with its AVD)
+      if the emulator work is over. Stale emulator images ride along with
+      whichever app owns them - no separate pass needed for app-owned ones
+- [ ] **Caches and regenerable**, the tier-A list (~16.7 GB): empty the
+      Recycle Bin (3.8 GB), app caches (8.5 GB), regenerable build output
+      (4.4 GB), WER and Windows Update leftovers. The only batch the tool
+      executes unaided; close browsers first so their caches pass the
+      running-app guard
+- [ ] **Installers and finished downloads** (~7 GB)
+- [ ] **Duplicates, split by territory** (snapshot 3, 2,993 proven sets).
+      Personal-only sets are fair game: 120 sets, ~6.4 GB to reclaim, keep
+      one copy each. Sets touching Windows/Program Files/ProgramData are
+      refused by the guard and stay - 64.2 GB of the 95.3 GB theoretical is
+      Windows' own redundancy and was never ours to take. AppData sets
+      (~24 GB) shrink with the app and cache passes, not by deleting single
+      copies out of an app's guts
 - [ ] Deletions in batches, to Recycle Bin, each logged to a reversible manifest
 - [ ] Re-measure free space after each batch and record the GB actually recovered
 - [ ] **The video decision, which is the whole ballgame.** 459.6 GB on disk, so

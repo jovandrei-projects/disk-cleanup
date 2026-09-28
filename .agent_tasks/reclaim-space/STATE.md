@@ -71,10 +71,16 @@ goes - that is the user's job, always; the video decision in particular.
 
 ### Phase 3 - The batches themselves, with the user
 
-- [ ] Zero-risk tier
-- [ ] Emulator and VM images
-- [ ] Installers and finished downloads
-- [ ] Duplicates, keeping one canonical copy per set
+Order set by the user 2026-09-28: bundled removals first, then granular.
+
+- [ ] Apps via Add/Remove Programs - the user runs the uninstallers; the
+      Software tab is the ranked list. App-owned emulator images go with
+      their app
+- [ ] Caches and regenerable, the tier-A batch (~16.7 GB) - the only batch
+      the tool runs by itself; Recycle Bin included via --empty-bin
+- [ ] Installers and finished downloads (~7 GB)
+- [ ] Personal-territory duplicates only (~6.4 GB, 120 sets on snapshot 3) -
+      system/AppData sets stay; territory split measured in ROADMAP Phase 4
 - [ ] Video - the user's call
 
 ## Where it stopped
@@ -86,10 +92,16 @@ proven over HTTP: mark a scratch file, POST recycle it, manifest written,
 restore brings it back. `reclaim.py --self-test` is green; `test_render.js`
 has a `reclaim` case and is green. Nothing real has been deleted.
 
+2026-09-28 session: the user set Phase 3's order (apps, then caches, then
+folders/dups split personal vs system, video last) and asked for the app
+suggestion list, which was produced from `analyze.software` install-dir
+mtimes. Next step is the user's keep/cut answers on that list, then marking
+the cache tier for the first real batch.
+
 ## Deferred or blocked
 
-Phase 3 is blocked on the user's review of the candidate lists - marks are
-the input and only three `unsure` marks exist so far.
+Phase 3 is no longer blocked on review mechanics but on the user's answers:
+which apps go, and a yes on the tier-A cache batch.
 
 ## Verification
 
