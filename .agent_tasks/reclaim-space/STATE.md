@@ -101,18 +101,34 @@ on the new History tab. Bin emptied 3.8 GB (permanent). First cache batch
 recycled 6.2 GB / 40 paths into the Bin. While marking, two latent candidate
 bugs surfaced - grouped kinds stored the *parent* as `path` (a tick would
 have recycled `C:\Users\andry`), and `LIKE '._%'` matched every dotfile -
-both fixed, see AGENTS.md traps 13-14. `scan.py --refresh C:\Users\andry`
-was in flight at session end to produce the post-batch snapshot.
+both fixed, see AGENTS.md traps 13-14.
+
+2026-09-29 early: refresh of `C:\Users\andry` landed as snapshot 5 (729.4 GB
+on disk, rollup/parents OK). A third latent bug: spent `delete` marks stayed
+in `decisions` forever, resolving "not on disk" -> refused -> every later
+batch aborted. `run_batch` now prunes stale marks pre-flight and consumes
+executed marks post-flight; `--self-test` green again (commit 592f7a3).
+`analyze.py --dupes` re-ran on snapshot 5: 2,985 proven sets, 22.1 GB
+reclaimable keeping one each - the recycled node_modules sets shrank the
+personal-dup figures. Unexplained: volume free space jumped ~50 GB (171.8 ->
+222.1 GB) this session; logged ops account for ~3.8 GB. Suspect OneDrive
+on-demand dehydration or user-side cleanup - ask before attributing.
 
 Next: user runs the 20 uninstalls (Settings > Apps), then refresh
 `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`,
-`C:\Users\andry`; confirm each removal in History; re-run
-`analyze.py --dupes` for the post-round numbers.
+`C:\Users\andry`; confirm each removal in History. Microsoft Edge is
+flagged: integrated into Windows, only ~1.8 GB - recommend skip unless the
+user insists. Re-run `--software` + a dup territory re-split once the
+uninstalls land. `C:\$Recycle.Bin` shows stale 3.8 GB in snapshot 5 (copied
+from snapshot 4, outside the refreshed subtree) - a `C:` root refresh
+corrects it when an accurate bin figure is wanted.
 
 ## Deferred or blocked
 
-Phase 3 is no longer blocked on review mechanics but on the user's answers:
-which apps go, and a yes on the tier-A cache batch.
+App uninstalls are the user's to run (Settings > Apps / each app's
+uninstaller) - the tool records decisions, it does not invoke uninstallers.
+Video tier (~243 GB in `C:\Videos` plus personal media) awaits the user's
+separate review.
 
 ## Verification
 

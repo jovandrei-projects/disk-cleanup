@@ -19,3 +19,4 @@ new input, so the column to watch is **new input**.
 If the figures are not available at the end of a session, write the row with
 the counts left as `n/a` rather than skipping it, so the session is still
 accounted for.
+| `reclaim-space` first real batch: bin emptied 3.8 GB, 40 cache/build marks recycled 6.2 GB, snapshot 5 verified; 3 latent bugs fixed (parent-path candidates, `._%` wildcard, spent marks blocking batches); History tab + `uninstalls` tracking shipped, self-test + render green | ~35 | ~30 | 3 | 1 |
