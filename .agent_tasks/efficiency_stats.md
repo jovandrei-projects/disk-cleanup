@@ -20,3 +20,4 @@ If the figures are not available at the end of a session, write the row with
 the counts left as `n/a` rather than skipping it, so the session is still
 accounted for.
 | `reclaim-space` first real batch: bin emptied 3.8 GB, 40 cache/build marks recycled 6.2 GB, snapshot 5 verified; 3 latent bugs fixed (parent-path candidates, `._%` wildcard, spent marks blocking batches); History tab + `uninstalls` tracking shipped, self-test + render green | ~35 | ~30 | 3 | 1 |
+| `reclaim-space` 18 approved apps uninstalled via real uninstallers (silent flags + UAC one at a time); Edge/Plex rescinded; Discord crumbs recycled; root-refresh guard added; full rescan launched; ~29 GB install footprint removed | ~25 | ~20 | 4 | 1 |

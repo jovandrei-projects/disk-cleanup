@@ -73,9 +73,12 @@ goes - that is the user's job, always; the video decision in particular.
 
 Order set by the user 2026-09-28: bundled removals first, then granular.
 
-- [ ] Apps via Add/Remove Programs - 20 apps marked (~31.4 GB), list lives in
-      the History tab (`uninstalls` table); waiting on the user to run the
-      uninstallers, then confirm each in History
+- [x] Apps via Add/Remove Programs - all 18 approved apps uninstalled
+      2026-09-29 (Edge and Plex rescinded by user; `done_at` set per row).
+      Driven one at a time with user approving UAC. Footprint ~29 GB.
+      Leftovers: Discord AppData swept to bin (batch-20260929-014129);
+      two harmless Program Files crumbs remain (PerformanceTest log,
+      Avid Link\Licenses) - guard-protected, delete by hand or leave.
 - [x] Caches and regenerable - bin emptied (3.8 GB, permanent) + batch
       `batch-20260929-002027` recycled 40 marks / 6.2 GB. ~4 GB of caches
       skipped: their apps were running. Note: recycled != freed - the bytes
@@ -114,14 +117,24 @@ personal-dup figures. Unexplained: volume free space jumped ~50 GB (171.8 ->
 222.1 GB) this session; logged ops account for ~3.8 GB. Suspect OneDrive
 on-demand dehydration or user-side cleanup - ask before attributing.
 
-Next: user runs the 20 uninstalls (Settings > Apps), then refresh
-`C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`,
-`C:\Users\andry`; confirm each removal in History. Microsoft Edge is
-flagged: integrated into Windows, only ~1.8 GB - recommend skip unless the
-user insists. Re-run `--software` + a dup territory re-split once the
-uninstalls land. `C:\$Recycle.Bin` shows stale 3.8 GB in snapshot 5 (copied
-from snapshot 4, outside the refreshed subtree) - a `C:` root refresh
-corrects it when an accurate bin figure is wanted.
+2026-09-29 evening: all 18 approved apps uninstalled via real uninstallers
+(UAC + silent flags where available: Inno /VERYSILENT, NSIS /S, MSI /X
+/passive, Squirrel, Blizzard, VS Installer, steam://uninstall). User
+rescinded Edge and Plex mid-run; both rows deleted from `uninstalls`.
+Projects verified safe first - uninstallers only touch their own install
+dirs; full project map (C:\Projects, IdeaProjects\LifeOrchestrator,
+AndroidStudioProjects\TestNutritionApp, source\repos\AngularTest, OneDrive
+_Learning) confirmed none overlap uninstall targets. Learned: `--refresh`
+cannot take the scan root itself (copy-nothing degenerate case aborted);
+guarded with a clear message. Free space 222.1 -> 233.7 GB during the round
+(deltas also masked by OneDrive hydration). A full rescan is in flight to
+produce snapshot 6 with exact post-round numbers.
+
+Next: when the rescan lands, verify, re-run `analyze.py --software` +
+dup territory re-split; sweep remaining app crumbs if the user wants
+(Battle.net agent dir under ProgramData may remain - check snapshot 6).
+Then installers tier (~7 GB) and personal-territory dups (~6.4 GB).
+Still undecided: Midnight Protocol demo (1.8 GB Steam), video tier.
 
 ## Deferred or blocked
 

@@ -587,6 +587,9 @@ def cmd_refresh(args):
     if not target.startswith(normpath(base_root)):
         print("%s is not under this scan's root (%s)" % (args.refresh, base_root))
         return 1
+    if target == normpath(base_root):
+        print("refreshing the scan root IS a full rescan; run without --refresh")
+        return 1
 
     # Locate the refresh point in the old snapshot. If the target itself was
     # never scanned (e.g. it is newly created) or no longer exists (deleted),
