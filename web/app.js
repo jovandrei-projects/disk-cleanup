@@ -508,6 +508,32 @@ function dupMemberRow(m) {
     revealBtn(m.path) + "</div>";
 }
 
+// Which part of the disk a path lives in, for the duplicate split. A copy
+// under Windows/Program Files is the OS's business; a copy under AppData is
+// best cleared via uninstall/cache passes; a copy elsewhere under the user
+// profile is a personal file the user can safely judge.
+function territoryOf(path) {
+  const p = path.toLowerCase();
+  if (p.startsWith("c:\\windows\\") || p.startsWith("c:\\program files\\") ||
+      p.startsWith("c:\\program files (x86)\\") ||
+      p.startsWith("c:\\programdata\\") || p.startsWith("c:\\$recycle.bin\\"))
+    return "system";
+  if (p.includes("\\appdata\\")) return "appdata";
+  return "personal";
+}
+
+const DUP_TERRITORY_META = {
+  personal: ["Personal files only",
+    "Every copy lives in your own folders - the safe pool. Pick the keeper, " +
+    "tick the rest."],
+  appdata: ["App data only",
+    "Copies inside application folders - these shrink when the app is " +
+    "uninstalled or its cache cleared, not by deleting files."],
+  system: ["System areas only",
+    "Windows/Program Files redundancy - the OS's own copies. Report only, " +
+    "nothing to do here."],
+};
+
 function dupFilesSection(dups) {
   const head = '<h3 style="margin:20px 0 6px;font-size:13px">Duplicate files';
   if (!dups || dups.computed_for == null)
@@ -525,32 +551,55 @@ function dupFilesSection(dups) {
   // physical copies cost disk, and one of them has to stay anyway.
   const annotated = dups.sets.map(s => {
     const phys = new Set(s.members.map(m => m.ino)).size;
-    return { s, phys, rec: Math.max(0, phys - 1) * s.bytes_logical };
+    const territories = [...new Set(s.members.map(m => territoryOf(m.path)))].sort();
+    return { s, phys, rec: Math.max(0, phys - 1) * s.bytes_logical,
+             territory: territories.join("+") };
   }).sort((a, b) => b.rec - a.rec);
-  const shown = annotated.slice(0, 400);
-  const lis = shown.map(({ s, phys, rec }) => {
-    const names = phys < s.n
-      ? s.n + " names, " + phys + " physical copies \u2014 "
-      : s.n + " identical copies \u2014 ";
-    return '<li><details class="tdir"><summary>' +
-      '<span class="tdirname">' + names + size(s.bytes_logical) +
-        " each</span>" +
-      '<span class="tstats">' +
-        (phys > 1 ? "removing all but one frees " + size(rec)
-                  : "one physical copy - nothing to reclaim") +
-        " \u2014 sha256 " + esc(s.sha256) + "\u2026</span></summary>" +
-      s.members.map(dupMemberRow).join("") + "</details></li>";
+  const groups = {};
+  for (const a of annotated)
+    (groups[a.territory] = groups[a.territory] || []).push(a);
+  const order = ["personal", "appdata", "system"];
+  const rest = Object.keys(groups).filter(k => !order.includes(k)).sort();
+  const subsections = order.concat(rest).filter(k => groups[k]).map(k => {
+    const list = groups[k];
+    const rec = list.reduce((a, x) => a + x.rec, 0);
+    const meta = DUP_TERRITORY_META[k] ||
+      ["Mixed: " + k.replace(/\+/g, " + "),
+       "Copies span territories - deleting your copy is fine, but leave the " +
+       "system/app copies alone."];
+    const shown = list.slice(0, 200);
+    const lis = shown.map(({ s, phys, rec }) => {
+      const names = phys < s.n
+        ? s.n + " names, " + phys + " physical copies \u2014 "
+        : s.n + " identical copies \u2014 ";
+      return '<li><details class="tdir"><summary>' +
+        '<span class="tdirname">' + names + size(s.bytes_logical) +
+          " each</span>" +
+        '<span class="tstats">' +
+          (phys > 1 ? "removing all but one frees " + size(rec)
+                    : "one physical copy - nothing to reclaim") +
+          " \u2014 sha256 " + esc(s.sha256) + "\u2026</span></summary>" +
+        s.members.map(dupMemberRow).join("") + "</details></li>";
+    }).join("");
+    return '<details class="tdir"' + (k === "personal" ? " open" : "") + '><summary>' +
+      '<span class="tdirname">' + meta[0] + "</span>" +
+      '<span class="tstats">' + list.length.toLocaleString() + " sets, " +
+        size(rec) + " reclaimable</span></summary>" +
+      '<p class="hint" style="margin:4px 0 8px">' + meta[1] +
+        (list.length > shown.length
+          ? " Biggest " + shown.length + " of " + list.length + " shown."
+          : "") + "</p>" +
+      '<ul class="tree">' + lis + "</ul></details>";
   }).join("");
   return head + " - " + dups.sets.length + " proven sets</h3>" +
     (stale ? '<p class="hint" style="margin:0 0 8px">Computed against snapshot ' +
       dups.computed_for + " \u2014 re-run <code>python analyze.py --dupes</code> " +
       "to refresh.</p>" : "") +
     '<p class="hint" style="margin:0 0 8px">Every copy in a set is ' +
-    "byte-identical (SHA-256). Tick the copies you would remove." +
-    (annotated.length > shown.length
-      ? " Biggest " + shown.length + " of " + annotated.length +
-        " sets shown." : "") + "</p>" +
-    '<ul class="tree">' + lis + "</ul>";
+    "byte-identical (SHA-256). Sets are split by where the copies live - " +
+    "only <b>personal</b> sets are yours to prune; tick the copies you " +
+    "would remove.</p>" +
+    subsections;
 }
 
 function dupTreesSection(t) {
@@ -586,6 +635,45 @@ function dupTreesSection(t) {
     '<ul class="tree">' + lis + "</ul>";
 }
 
+// Friendly names + one-line explanation per candidate kind, so the
+// Recommended view can group a thousand rows into a handful of decisions.
+const KIND_META = {
+  recycle_bin:  ["Recycle Bin contents",
+    "Already deleted once - emptying frees the space permanently."],
+  regenerable:  ["Build output & package caches",
+    "node_modules, build/, target/ and friends - regenerated the next time " +
+    "the project builds."],
+  appdata_cache: ["App caches",
+    "Cache folders inside AppData - apps rebuild them on next use. The guard " +
+    "refuses caches of apps that are running."],
+  empty_dir:    ["Empty folders",
+    "Directories with nothing inside - tidiness more than space."],
+  macos_junk:   ["macOS metadata litter",
+    "._* and .DS_Store files copied in from a Mac - safe to remove."],
+  winupdate:    ["Windows Update staging",
+    "Downloaded update payloads already installed - Disk Cleanup territory."],
+  wer:          ["Windows error reports",
+    "Crash-report archives Windows keeps for diagnostics."],
+  vm_image:     ["Emulator / VM images",
+    "Android AVDs and emulator disks - recreatable from the SDK manager, " +
+    "but annoying to rebuild if you still use them."],
+  stale_large:  ["Large files untouched 2+ years",
+    "Big files that have not been modified in a long time - verify before " +
+    "removing."],
+  installer:    ["Installers & disc images",
+    "Setup files already run - the installed app does not need them."],
+  archive:      ["Large archives",
+    "zips/ISOs sitting on disk - extract once, keep the result, drop the " +
+    "rest?"],
+  cloud_archive:["Cloud-only archives (OneDrive)",
+    "Removing frees OneDrive quota, NOT local disk - they are not stored " +
+    "here."],
+  old_download: ["Old downloads",
+    "Files that have sat in Downloads for over a year."],
+  stale_video:  ["Large videos untouched 2+ years",
+    "Watched already, or never will be?"],
+};
+
 async function renderRecommended() {
   busy();
   const [d, td] = await Promise.all([
@@ -596,15 +684,31 @@ async function renderRecommended() {
 
   const section = (title, sub, items) => {
     if (!items.length) return "";
+    const groups = {};
+    for (const c of items)
+      (groups[c.kind] = groups[c.kind] || []).push(c);
+    const subs = Object.values(groups)
+      .sort((a, b) => sum(b) - sum(a))
+      .map(list => {
+        const meta = KIND_META[list[0].kind] ||
+          [list[0].kind, list[0].reason || ""];
+        return '<details class="tdir"><summary>' +
+          '<span class="tdirname">' + esc(meta[0]) + "</span>" +
+          '<span class="tstats">' + list.length.toLocaleString() +
+            (list.length === 1 ? " item" : " items") + ", " +
+            size(sum(list)) + "</span></summary>" +
+          '<p class="hint" style="margin:4px 0 8px">' + esc(meta[1]) +
+            "</p>" + treeHTML(list) + "</details>";
+      }).join("");
     return '<h3 style="margin:20px 0 6px;font-size:13px">' +
       title + " - " + items.length.toLocaleString() + " candidates, " +
       size(sum(items)) + "</h3>" +
-      '<p class="hint" style="margin:0 0 8px">' + sub + "</p>" + treeHTML(items);
+      '<p class="hint" style="margin:0 0 8px">' + sub + "</p>" + subs;
   };
 
   view.innerHTML =
-    '<div class="note">Everything the other views know about, condensed into two ' +
-    'lists. <b>Safe</b> means empty, regenerable, or already deleted once. ' +
+    '<div class="note">Everything the other views know about, condensed into ' +
+    'groups. <b>Safe</b> means empty, regenerable, or already deleted once. ' +
     '<b>Decide</b> means real data: the tool can put the number in front of you ' +
     'but only you know if you still want it. Tick what you would remove; marks ' +
     'are saved and survive rescans. Nothing here deletes anything yet \u2014 ' +

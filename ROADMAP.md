@@ -207,45 +207,44 @@ First phase that changes anything. Order set with the user 2026-09-28:
 bundled removals first - an uninstall takes its folders with it - then the
 granular passes. Video stays last; it is a decision, not a cleanup.
 
-- [ ] Review the Phase 3 lists together and mark keep / delete / archive
-- [ ] **Apps**, through Add/Remove Programs from the ranked Software tab list.
-      Prime candidates are the ones untouched 2.5+ years (install-dir mtime):
-      Steam games (~12 GB), the benchmark suite (~3 GB), GIMP, OBS, Battle.net,
-      both Visual Studios, Plex client; plus the Android toolchain (~20 GB
-      with SDK images and AVDs) and Google Play Games (~5.4 GB with its AVD)
-      if the emulator work is over. Stale emulator images ride along with
-      whichever app owns them - no separate pass needed for app-owned ones
-- [ ] **Caches and regenerable**, the tier-A list (~16.7 GB): empty the
-      Recycle Bin (3.8 GB), app caches (8.5 GB), regenerable build output
-      (4.4 GB), WER and Windows Update leftovers. The only batch the tool
-      executes unaided; close browsers first so their caches pass the
-      running-app guard
-- [ ] **Installers and finished downloads** (~7 GB)
-- [ ] **Duplicates, split by territory** (snapshot 3, 2,993 proven sets).
-      Personal-only sets are fair game: 120 sets, ~6.4 GB to reclaim, keep
-      one copy each. Sets touching Windows/Program Files/ProgramData are
-      refused by the guard and stay - 64.2 GB of the 95.3 GB theoretical is
-      Windows' own redundancy and was never ours to take. AppData sets
-      (~24 GB) shrink with the app and cache passes, not by deleting single
-      copies out of an app's guts
-- [ ] Deletions in batches, to Recycle Bin, each logged to a reversible manifest
-- [ ] Re-measure free space after each batch and record the GB actually recovered
+- [x] Review the Phase 3 lists together and mark keep / delete / archive
+- [x] **Apps** - done 2026-09-29: all 18 approved apps uninstalled through
+      real uninstallers (Edge and Plex rescinded mid-run). Footprint ~29 GB
+      verified gone in snapshot 6: Program Files 42.0 -> 22.2 GB,
+      Program Files (x86) 27.2 -> 12.4 GB. Android Studio toolchain kept
+      (not marked); Midnight Protocol demo removed by user via Steam
+- [x] **Caches and regenerable**, first pass: Recycle Bin emptied (3.8 GB,
+      permanent), cache batch `batch-20260929-002027` recycled 40 marks /
+      6.2 GB, Discord leftovers `batch-20260929-014129`. Snapshot 6 shows
+      caches already regrowing (appdata_cache 9.8 GB, regenerable 10.8 GB -
+      the new video-tools venv lives there)
+- [ ] **Installers and finished downloads** (~2 GB actionable of 2.9 GB on
+      snapshot 6: BasemarkGPU updater installer, Sibelius.msi, Temp setups.
+      The NVIDIA driver .exes and OneDriveSetup sit under ProgramData /
+      Program Files - the guard refuses them, by design)
+- [ ] **Duplicates, split by territory** (snapshot 6, 2,862 proven sets,
+      20.8 GB reclaimable keeping one each). Personal-only sets: 260 sets,
+      ~4.1 GB - of which ~2.9 GB is `video-tools\.venv` torch DLLs
+      duplicating `C:\Python311`'s torch (a venv hygiene question, not a
+      keeper pick), leaving ~1.2 GB of real personal-file dup decisions.
+      System sets (2,263, 3.8 GB) and AppData sets stay - report only
+- [x] Deletions in batches, to Recycle Bin, each logged to a reversible manifest
+- [x] Re-measure free space after each batch and record the GB actually recovered
 
 **Progress 2026-09-29:** History tab added - an `uninstalls` table tracks
 apps marked/confirmed removed, and a free-space-over-time chart plots each
-snapshot. Recycle Bin emptied (3.8 GB, manifest `batch-20260928-235629`,
-permanent). First cache batch `batch-20260929-002027`: 40 marks, 6.2 GB sent
-to the Bin, still restorable. ~4 GB more of tier-A caches were skipped
-because their apps were running (Chrome, Edge webview, Devin, Office/Teams
-providers, Sublime). 20 apps marked for uninstall, ~31.4 GB footprint, the
-user runs the uninstallers. Two candidate bugs found and fixed the same day -
-see AGENTS.md trap 13; nothing destructive ran.
-- [ ] **The video decision, which is the whole ballgame.** 459.6 GB on disk, so
-      everything else combined is worth less than a third of it. Ripped
-      series and movies under `C:\Videos\Torrent*` are ~180 GB and are
-      re-obtainable; `Hikaru no Go` is another 66.9 GB. Personal footage in
-      `Imágenes\Álbum de cámara` is not replaceable and should be treated
-      separately. Keep / move to external / delete, per group, your call
+snapshot. Recommended view now groups candidates by kind and duplicate
+sets by territory. Free space 158.6 -> 233.7 GB baseline-to-now, including
+~50 GB the user removed manually (Hikaru no Go and other videos) and ~29 GB
+of app uninstalls. Installer candidates no longer list app binaries
+(grp='installer' matched every .exe; now name/location-filtered).
+- [ ] **The video decision** - user reviewed the map 2026-09-29 and is
+      keeping the videos for now. Snapshot 6 breakdown: `C:\Videos\Torrent`
+      132.1 GB (Good Doctor, Rick and Morty, Modern Family runs),
+      `C:\Videos\TorrentMovies` 111.0 GB (Final Destination set ~46 GB,
+      Hereditary 19 GB, Spider-Verse, One Piece films), `~\Videos\history`
+      61.1 GB, `~\Videos\4KCapture` 9.8 GB, `~\Downloads\videos` 10.9 GB.
+      Deferred, not rejected - revisit when free space tightens
 
 ## Phase 5 - Reorganize
 

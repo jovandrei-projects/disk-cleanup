@@ -192,11 +192,23 @@ def candidates(db, sid):
         "Unchanged 2+ years and large - verify before removing")
 
     # Installers and disc images still sitting around (not the Windows
-    # Installer cache - those are needed for uninstalls).
+    # Installer cache - those are needed for uninstalls). grp='installer'
+    # covers every .exe, so restrict .exe hits to setup-ish names or
+    # download-ish locations - otherwise the query "finds" Code.exe and
+    # Typora.exe, which are the installed apps, not leftover installers.
+    # $Recycle.Bin contents are also excluded - the bin is its own candidate.
     out += _file_candidates(
         db, sid,
         "f.grp='installer' AND f.cloud_only=0 AND f.bytes_disk > 100*1024*1024"
-        " AND d.path NOT LIKE 'C:\\Windows\\Installer%'",
+        " AND d.path NOT LIKE 'C:\\Windows\\Installer%'"
+        " AND d.path NOT LIKE 'C:\\$Recycle.Bin%'"
+        " AND (lower(f.ext) != 'exe'"
+        "      OR lower(f.name) LIKE '%setup%' OR lower(f.name) LIKE '%install%'"
+        "      OR lower(f.name) LIKE '%driver%' OR lower(f.name) LIKE '%unins%'"
+        "      OR d.path LIKE '%\\Downloads%' OR d.path LIKE '%\\Temp\\%'"
+        "      OR d.path LIKE '%\\Desktop%'"
+        "      OR d.path LIKE '%Downloaded Installations%'"
+        "      OR d.path LIKE '%\\Downloader%')",
         (), "installer", "B",
         "Installer already run - the installed app does not need it")
 

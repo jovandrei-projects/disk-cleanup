@@ -169,6 +169,17 @@ use `;`.
     background writes) because the files still occupy `$Recycle.Bin`. The GB
     only materialize on `--empty-bin`, which is permanent. Report both numbers
     so a "6 GB batch" is not mistaken for 6 GB already recovered.
+15. **`grp='installer'` means every `.exe`, not just setup files.** The kind
+    once listed `Code.exe`, `Typora.exe`, `Devin.exe` as "installers already
+    run" - ticking one would gut a working app. The query now also requires a
+    setup-ish name (`setup`/`install`/`driver`/`unins`) or a download-ish
+    location for `.exe` files, and excludes `$Recycle.Bin` outright. Any new
+    "this file is disposable" kind needs the same paranoia: the difference
+    between an installer and an installed program is context, not extension.
+16. **`--refresh` cannot take the scan root.** Refreshing `C:\` hit the
+    copy-nothing degenerate case and aborted mid-write; it now refuses early
+    with a clear message. To refresh everything, run a full `python scan.py` -
+    that is what a root refresh would be anyway.
 
 ## Running things
 
