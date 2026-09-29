@@ -73,11 +73,13 @@ goes - that is the user's job, always; the video decision in particular.
 
 Order set by the user 2026-09-28: bundled removals first, then granular.
 
-- [ ] Apps via Add/Remove Programs - the user runs the uninstallers; the
-      Software tab is the ranked list. App-owned emulator images go with
-      their app
-- [ ] Caches and regenerable, the tier-A batch (~16.7 GB) - the only batch
-      the tool runs by itself; Recycle Bin included via --empty-bin
+- [ ] Apps via Add/Remove Programs - 20 apps marked (~31.4 GB), list lives in
+      the History tab (`uninstalls` table); waiting on the user to run the
+      uninstallers, then confirm each in History
+- [x] Caches and regenerable - bin emptied (3.8 GB, permanent) + batch
+      `batch-20260929-002027` recycled 40 marks / 6.2 GB. ~4 GB of caches
+      skipped: their apps were running. Note: recycled != freed - the bytes
+      stay in the Bin until it is emptied again (trap 14)
 - [ ] Installers and finished downloads (~7 GB)
 - [ ] Personal-territory duplicates only (~6.4 GB, 120 sets on snapshot 3) -
       system/AppData sets stay; territory split measured in ROADMAP Phase 4
@@ -93,10 +95,19 @@ restore brings it back. `reclaim.py --self-test` is green; `test_render.js`
 has a `reclaim` case and is green. Nothing real has been deleted.
 
 2026-09-28 session: the user set Phase 3's order (apps, then caches, then
-folders/dups split personal vs system, video last) and asked for the app
-suggestion list, which was produced from `analyze.software` install-dir
-mtimes. Next step is the user's keep/cut answers on that list, then marking
-the cache tier for the first real batch.
+folders/dups split personal vs system, video last) and answered the app
+list: 20 cuts (~31.4 GB), recorded in the new `uninstalls` table and shown
+on the new History tab. Bin emptied 3.8 GB (permanent). First cache batch
+recycled 6.2 GB / 40 paths into the Bin. While marking, two latent candidate
+bugs surfaced - grouped kinds stored the *parent* as `path` (a tick would
+have recycled `C:\Users\andry`), and `LIKE '._%'` matched every dotfile -
+both fixed, see AGENTS.md traps 13-14. `scan.py --refresh C:\Users\andry`
+was in flight at session end to produce the post-batch snapshot.
+
+Next: user runs the 20 uninstalls (Settings > Apps), then refresh
+`C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`,
+`C:\Users\andry`; confirm each removal in History; re-run
+`analyze.py --dupes` for the post-round numbers.
 
 ## Deferred or blocked
 

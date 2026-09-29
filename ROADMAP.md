@@ -230,6 +230,16 @@ granular passes. Video stays last; it is a decision, not a cleanup.
       copies out of an app's guts
 - [ ] Deletions in batches, to Recycle Bin, each logged to a reversible manifest
 - [ ] Re-measure free space after each batch and record the GB actually recovered
+
+**Progress 2026-09-29:** History tab added - an `uninstalls` table tracks
+apps marked/confirmed removed, and a free-space-over-time chart plots each
+snapshot. Recycle Bin emptied (3.8 GB, manifest `batch-20260928-235629`,
+permanent). First cache batch `batch-20260929-002027`: 40 marks, 6.2 GB sent
+to the Bin, still restorable. ~4 GB more of tier-A caches were skipped
+because their apps were running (Chrome, Edge webview, Devin, Office/Teams
+providers, Sublime). 20 apps marked for uninstall, ~31.4 GB footprint, the
+user runs the uninstallers. Two candidate bugs found and fixed the same day -
+see AGENTS.md trap 13; nothing destructive ran.
 - [ ] **The video decision, which is the whole ballgame.** 459.6 GB on disk, so
       everything else combined is worth less than a third of it. Ripped
       series and movies under `C:\Videos\Torrent*` are ~180 GB and are

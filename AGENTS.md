@@ -152,6 +152,23 @@ use `;`.
     3 s - do not shorten that. The pair is also how restore works: `$I` holds
     the original path UTF-16LE, `$R` holds the data; moving `$R` back and
     dropping `$I` restores without the shell's localized verbs.
+13. **A candidate row's `path` is the unit a 'delete' mark recycles.** Kinds
+    that group findings under a folder once stored the *parent* in `path`:
+    ticking "7 macOS junk files" marked the folder holding them, which is how
+    `C:\Users\andry` itself ended up marked - a 335 GB recycle of the whole
+    profile. `analyze.candidates` now names the actual file or empty dir, and
+    `guard_reason` refuses the profile root outright (`NEVER_EXACT`). Any new
+    candidate kind that groups findings still has to put a deletable path on
+    the row. Two adjacent bugs found with it: in `LIKE`, `_` is a single-char
+    wildcard - `'._%'` matched *every dotfile* (`.condarc`, `.babelrc`), and
+    the fix is `'.\_%' ESCAPE '\'`; and `reclaim._path_size` resolves file
+    marks via parent-dir + name because the `lower(path||name)` fallbacks
+    force a full table scan per mark.
+14. **Recycling moves bytes; it does not free them.** A batch's `freed` is the
+    volume's free-space delta and comes out ≈0 (or slightly negative from
+    background writes) because the files still occupy `$Recycle.Bin`. The GB
+    only materialize on `--empty-bin`, which is permanent. Report both numbers
+    so a "6 GB batch" is not mistaken for 6 GB already recovered.
 
 ## Running things
 

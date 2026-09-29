@@ -114,6 +114,8 @@ function assertRendered(name, mustContain) {
     ["video", ["Folders holding local video", "<table"]],
     ["empty", ["<table", "Depth"]],
     ["software", ["<table", "registry", "Install location"]],
+    ["history", ["Free space over time", "Uninstalls", "<svg",
+                 "Batch history", "net since first scan"]],
   ];
 
   for (const [tab, must] of cases) {

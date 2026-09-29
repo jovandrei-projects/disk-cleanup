@@ -73,6 +73,15 @@ class Store:
             "CREATE TABLE IF NOT EXISTS decisions ("
             " id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
             " choice TEXT NOT NULL, decided_at REAL NOT NULL, note TEXT)")
+        # Apps removed through Add/Remove Programs live outside the snapshot,
+        # so they get their own log: marked when the user decides, done when
+        # the uninstaller has run. Keyed on the app's name, like decisions is
+        # keyed on path, so it survives rescans.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS uninstalls ("
+            " id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,"
+            " publisher TEXT, install_dir TEXT, bytes INTEGER,"
+            " marked_at REAL NOT NULL, done_at REAL)")
         self.conn.commit()
         analyze.ensure_schema(self.conn)
         # A snapshot never changes once complete, so whole-table aggregates are
@@ -342,6 +351,30 @@ class Store:
         self._cache.pop("candidates", None)
         self._cache.pop("reclaim", None)
 
+    def history(self):
+        """What Phase 4 leaves behind: uninstall marks, batch manifests, and
+        the free-space timeline across snapshots. Not cached - it changes
+        every time something is marked, recycled or uninstalled."""
+        apps = self.q("SELECT * FROM uninstalls ORDER BY bytes DESC")
+        for a in apps:
+            a["exists"] = bool(a["install_dir"]) and os.path.exists(
+                a["install_dir"])
+        timeline = self.q(
+            "SELECT id, started_at, finished_at, volume_free_bytes, bytes_disk,"
+            " n_files, refresh_path FROM snapshots WHERE complete=1 ORDER BY id")
+        return {"apps": apps, "timeline": timeline,
+                "manifests": reclaim.list_manifests()}
+
+    def mark_uninstall(self, name, install_dir, size_bytes, publisher):
+        self.conn.execute(
+            "INSERT INTO uninstalls (name, publisher, install_dir, bytes,"
+            " marked_at) VALUES (?,?,?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET publisher=excluded.publisher,"
+            " install_dir=excluded.install_dir, bytes=excluded.bytes,"
+            " marked_at=excluded.marked_at, done_at=NULL",
+            (name, publisher, install_dir, size_bytes, time.time()))
+        self.conn.commit()
+
     def proposed_batch(self):
         """What the current 'delete' marks would do if run: per-path verdicts,
         the Recycle Bin's own footprint, and past batches."""
@@ -463,6 +496,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/decisions":
                 return self.send_json({"decisions": s.q(
                     "SELECT path, choice, decided_at FROM decisions")})
+            if u.path == "/api/history":
+                return self.send_json(s.history())
             if u.path == "/api/reclaim":
                 # Always fresh: a deletion proposal is a few rows and must
                 # never lag behind the marks it acts on.
@@ -515,6 +550,23 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/reload":
                 s.reload()
                 return self.send_json({"ok": True, "snapshot": s.sid})
+            if u.path == "/api/uninstall":
+                act = body.get("action")
+                name = (body.get("name") or "").strip()
+                if not name or act not in ("mark", "done", "unmark"):
+                    return self.send_json({"error": "bad uninstall action"}, 400)
+                if act == "mark":
+                    s.mark_uninstall(name, body.get("install_dir") or "",
+                                     int(body.get("bytes") or 0),
+                                     body.get("publisher") or "")
+                else:
+                    s.conn.execute(
+                        "UPDATE uninstalls SET done_at=? WHERE name=?"
+                        if act == "done" else
+                        "DELETE FROM uninstalls WHERE name=?",
+                        (time.time(), name) if act == "done" else (name,))
+                    s.conn.commit()
+                return self.send_json({"ok": True})
             self.send_error(404)
         except Exception as exc:
             self.send_json({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)

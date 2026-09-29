@@ -95,34 +95,36 @@ def candidates(db, sid):
         for r in _rows(db, "SELECT id, path, total_files FROM dirs WHERE id IN (%s)"
                        % marks, tuple(by_parent)):
             parent_paths[r["id"]] = r["path"]
+    # Every row names the folder that would actually be recycled - never the
+    # parent that merely groups them. A mark means "send this path to the
+    # Bin", so a row pointing at a non-empty parent would take the parent's
+    # real contents with it.
     shown_parents = 0
     for pid, kids in sorted(by_parent.items(), key=lambda kv: -len(kv[1])):
         shown_parents += 1
         if shown_parents > 400:
             break
         ppath = parent_paths.get(pid, "?")
-        if len(kids) > 2:
-            out.append(dict(kind="empty_dir", tier="A", path=ppath, dir_id=pid,
-                            bytes_disk=0, n_files=len(kids), mtime=None,
-                            reason="%d empty subfolders - delete the whole set"
-                                   % len(kids)))
-        else:
-            for k in kids:
-                out.append(dict(kind="empty_dir", tier="A", path=k["path"],
-                                dir_id=k["id"], bytes_disk=0, n_files=0,
-                                mtime=None,
-                                reason="Empty folder - nothing beneath it"))
+        same = "Empty folder - nothing beneath it" if len(kids) <= 2 else (
+            "Empty folder - one of %d under %s" % (len(kids), ppath))
+        for k in kids:
+            out.append(dict(kind="empty_dir", tier="A", path=k["path"],
+                            dir_id=k["id"], bytes_disk=0, n_files=0,
+                            mtime=None, reason=same))
 
-    # macOS resource-fork litter (._*) and .DS_Store, aggregated per folder so
-    # a folder of 600 turds is one decision, not 600.
+    # macOS resource-fork litter (._*) and .DS_Store. The paths are the turd
+    # files themselves for the same reason: a row's path is the unit that a
+    # 'delete' mark would recycle, so it must never be the folder around them.
+    # The underscore in '._%' is escaped - unescaped it is LIKE's single-char
+    # wildcard and matches every dotfile (.condarc, .babelrc, .gitattributes).
     mac = db.execute(
-        "SELECT d.id, d.path, COUNT(*) AS n, SUM(f.bytes_disk) AS b"
+        "SELECT d.path || '\\' || f.name AS p, f.bytes_disk"
         " FROM files f JOIN dirs d ON d.id=f.dir_id"
-        " WHERE f.snapshot_id=? AND (f.name LIKE '._%' OR f.name='.DS_Store')"
-        " GROUP BY d.id", (sid,)).fetchall()
-    out += [dict(kind="macos_junk", tier="A", path=r[1], dir_id=r[0],
-                 bytes_disk=r[3], n_files=r[2], mtime=None,
-                 reason="%d macOS metadata files (._*, .DS_Store)" % r[2])
+        " WHERE f.snapshot_id=? AND (f.name LIKE '.\\_%' ESCAPE '\\'"
+        " OR f.name='.DS_Store')", (sid,)).fetchall()
+    out += [dict(kind="macos_junk", tier="A", path=r[0], dir_id=None,
+                 bytes_disk=r[1], n_files=1, mtime=None,
+                 reason="macOS metadata file (._*, .DS_Store)")
             for r in mac]
 
     # The Recycle Bin itself. Deleting here frees space instantly.

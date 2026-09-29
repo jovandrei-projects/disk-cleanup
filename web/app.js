@@ -74,6 +74,7 @@ const view = document.getElementById("view");
 const TABS = [
   ["recommended", "Recommended"],
   ["reclaim", "Reclaim"],
+  ["history", "History"],
   ["folders", "Folders"],
   ["types", "File types"],
   ["age", "Age"],
@@ -796,6 +797,133 @@ async function renderReclaim() {
   };
 }
 
+// ------------------------------------------------------------------ history
+//
+// The record of what cleanup did: which apps were uninstalled, which batches
+// went to the Bin and what they freed, and how free space moved across
+// snapshots. Exists so a removed app can be found again and reinstalled, and
+// so progress is a line going up, not a memory.
+
+function freeChart(tl) {
+  if (!tl.length) return '<p class="hint">No snapshots yet.</p>';
+  const W = 740, H = 200, L = 58, R = 16, T = 16, B = 34;
+  const pts = tl.map(s =>
+    [s.finished_at || s.started_at, s.volume_free_bytes / GB, s.id,
+     s.refresh_path]);
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+  let f0 = Math.min(...pts.map(p => p[1])), f1 = Math.max(...pts.map(p => p[1]));
+  const pad = Math.max(2, (f1 - f0) * 0.18);
+  f0 -= pad; f1 += pad;
+  const X = t => L + (W - L - R) * (t1 > t0 ? (t - t0) / (t1 - t0) : 0.5);
+  const Y = f => T + (H - T - B) * (1 - (f - f0) / (f1 - f0));
+
+  let grid = "", labels = "";
+  for (let i = 0; i <= 4; i++) {
+    const f = f0 + (f1 - f0) * i / 4, y = Y(f).toFixed(1);
+    grid += '<line x1="' + L + '" y1="' + y + '" x2="' + (W - R) + '" y2="' +
+      y + '" stroke="#2b303a"/>';
+    labels += '<text x="' + (L - 6) + '" y="' + (Number(y) + 4) +
+      '" fill="#8b93a3" font-size="10" text-anchor="end">' +
+      f.toFixed(0) + " GB</text>";
+  }
+  const line = pts.map(p =>
+    X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1)).join(" ");
+  let dots = "";
+  for (const [t, f, id, rp] of pts) {
+    dots += '<circle cx="' + X(t).toFixed(1) + '" cy="' + Y(f).toFixed(1) +
+      '" r="3.5" fill="#5aa9e6"><title>snapshot ' + id + " \u2014 " +
+      f.toFixed(1) + " GB free \u2014 " + new Date(t * 1000).toLocaleString() +
+      (rp ? " \u2014 refresh of " + rp : "") + "</title></circle>" +
+      '<text x="' + X(t).toFixed(1) + '" y="' + (H - 10) +
+      '" fill="#8b93a3" font-size="10" text-anchor="middle">' +
+      new Date(t * 1000).toLocaleDateString() + "</text>";
+  }
+  return '<svg width="' + W + '" height="' + H + '" role="img" ' +
+    'aria-label="free space over time" style="max-width:100%">' +
+    grid +
+    '<polyline fill="none" stroke="#5aa9e6" stroke-width="2" points="' +
+      line + '"/>' +
+    dots + labels + "</svg>";
+}
+
+async function renderHistory() {
+  busy();
+  const d = await api("/api/history");
+
+  const freed = d.manifests.reduce((a, m) => a + (m.freed || 0), 0);
+  const tl = d.timeline;
+  const freeNow = SNAP.volume_free_bytes;
+  const freeStart = tl.length ? tl[0].volume_free_bytes : freeNow;
+  const pending = d.apps.filter(a => !a.done_at);
+  const doneBytes = d.apps.filter(a => a.done_at)
+    .reduce((a, x) => a + (x.bytes || 0), 0);
+  const dfree = freeNow - freeStart;
+  const dfreeText = (dfree >= 0 ? "+" : "\u2212") + size(Math.abs(dfree));
+
+  const arows = d.apps.map(a => {
+    const status = a.done_at
+      ? '<span class="tag regen">removed ' +
+        new Date(a.done_at * 1000).toLocaleDateString() + "</span>"
+      : (a.install_dir && !a.exists)
+        ? '<span class="tag cloud">folder gone</span>'
+        : '<span class="tag">still installed</span>';
+    return "<tr>" +
+      '<td class="name">' + esc(a.name) +
+        (a.publisher ? '<div class="path">' + esc(a.publisher) + "</div>" : "") +
+        "</td>" +
+      '<td class="num">' + size(a.bytes) + "</td>" +
+      '<td class="name"><div class="path">' + esc(a.install_dir || "") +
+        "</div></td>" +
+      '<td class="num">' +
+        new Date(a.marked_at * 1000).toLocaleDateString() + "</td>" +
+      "<td>" + status + "</td>" +
+      "<td>" + (a.done_at ? ""
+        : '<a href="#" data-udone="' + esc(a.name) + '">confirm removed</a> ') +
+        '<a href="#" data-uunmark="' + esc(a.name) + '">unmark</a></td></tr>';
+  }).join("");
+
+  const mrows = d.manifests.map(m => {
+    const when = m.batch.replace("batch-", "");
+    const stamp = when.slice(0, 4) + "-" + when.slice(4, 6) + "-" +
+      when.slice(6, 8) + " " + when.slice(9, 11) + ":" + when.slice(11, 13);
+    const label = m.items ? m.ok + "/" + m.items + " recycled" : "bin emptied";
+    return "<tr>" +
+      '<td class="name">' + esc(m.batch) + "</td>" +
+      '<td class="num">' + esc(stamp) + "</td>" +
+      '<td class="num">' + label + "</td>" +
+      '<td class="num">' + (m.freed == null ? "" : size(m.freed)) + "</td>" +
+      "<td>" + (m.items ? '<a href="#" data-tab="reclaim">reclaim tab</a>'
+                        : '<span class="tag">permanent</span>') + "</td></tr>";
+  }).join("");
+
+  view.innerHTML =
+    '<div class="note">The running record of the cleanup. Uninstalls are ' +
+    "tracked so a removed app can be found and reinstalled later; batches are " +
+    "the file deletions logged to manifests under <code>data/manifests/</code>" +
+    "; the chart is free space at each snapshot.</div>" +
+    '<div class="cards">' +
+      card(size(freeNow), "free now") +
+      card(dfreeText, "net since first scan") +
+      card(size(freed), "freed by batches") +
+      card(pending.length.toLocaleString(), "apps marked to remove") +
+      card(doneBytes ? size(doneBytes) : "0 B", "app footprint removed") +
+    "</div>" +
+    '<h3 style="margin:8px 0 6px;font-size:13px">Free space over time</h3>' +
+    freeChart(tl) +
+    '<h3 style="margin:20px 0 6px;font-size:13px">Uninstalls</h3>' +
+    (d.apps.length
+      ? table(["Application", "Size", "Install dir", "Marked", "Status", ""],
+              arows)
+      : '<p class="hint">No apps marked for removal yet.</p>') +
+    '<p class="hint" style="margin-top:8px">Removal itself goes through ' +
+    "Add/Remove Programs \u2014 press <i>confirm removed</i> once the " +
+    "uninstaller has run.</p>" +
+    '<h3 style="margin:20px 0 6px;font-size:13px">Batch history</h3>' +
+    (mrows
+      ? table(["Batch", "When", "Items", "Freed", ""], mrows)
+      : '<p class="hint">No manifests yet.</p>');
+}
+
 // ------------------------------------------------------------------ software
 
 async function renderSoftware() {
@@ -876,6 +1004,7 @@ async function renderSearch(term) {
 const RENDER = {
   recommended: renderRecommended,
   reclaim: renderReclaim,
+  history: renderHistory,
   folders: renderFolders, types: renderTypes, age: renderAge,
   biggest: renderBiggest, video: renderVideo, empty: renderEmpty,
   software: renderSoftware,
@@ -921,6 +1050,22 @@ document.addEventListener("click", e => {
     e.preventDefault();
     apiPost("/api/decide", { path: un.dataset.unmark, choice: "unsure" })
       .then(() => renderReclaim());
+    return;
+  }
+
+  const ud = e.target.closest("[data-udone]");
+  if (ud) {
+    e.preventDefault();
+    apiPost("/api/uninstall", { action: "done", name: ud.dataset.udone })
+      .then(() => renderHistory());
+    return;
+  }
+
+  const uu = e.target.closest("[data-uunmark]");
+  if (uu) {
+    e.preventDefault();
+    apiPost("/api/uninstall", { action: "unmark", name: uu.dataset.uunmark })
+      .then(() => renderHistory());
     return;
   }
 

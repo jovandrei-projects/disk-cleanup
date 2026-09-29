@@ -50,6 +50,12 @@ NEVER_PREFIXES = (
 )
 NEVER_FILES = {r"c:\hiberfil.sys", r"c:\pagefile.sys", r"c:\swapfile.sys"}
 TOOL_ROOT = normpath(HERE)
+# Exact matches, not prefixes: everything user-owned lives *under* these, but
+# the roots themselves are never a recycle target. Exists because a candidate
+# row once named a parent folder for a few junk files inside it, and a
+# 'delete' mark on that row would have recycled the whole profile.
+NEVER_EXACT = {normpath(os.path.expanduser("~")),
+               normpath(os.path.dirname(os.path.expanduser("~")))}
 
 
 def running_processes():
@@ -109,6 +115,8 @@ def guard_reason(path, running=None):
             return "protected system area"
     if n in NEVER_FILES:
         return "protected system file"
+    if n in NEVER_EXACT:
+        return "a user profile root is never a target"
     if n == TOOL_ROOT or n.startswith(TOOL_ROOT + "\\"):
         return "inside this tool's own directory"
     if not os.path.lexists(win(p)):
@@ -281,11 +289,29 @@ def empty_bin_logged(drive="C:\\"):
 # ------------------------------------------------------------------- batches
 
 def _path_size(db, sid, path):
-    """What the snapshot knows about a marked path: dir row, file row, or none."""
+    """What the snapshot knows about a marked path: dir row, file row, or none.
+
+    Only the exact-match queries are indexed. lower() on a column or on a
+    joined expression forces a full scan, so a file mark is resolved by
+    splitting it into parent dir + name through the indexes first, and the
+    case-insensitive fallbacks run only for paths the snapshot truly does
+    not know - file marks made them once-a-scan-per-mark slow.
+    """
     r = db.execute(
         "SELECT 'dir' AS src, total_bytes_disk AS bd, total_bytes_logical AS bl,"
         " total_bytes_cloud AS bc, total_files AS nf, newest_mtime AS mt, 0 AS cl"
         " FROM dirs WHERE snapshot_id=? AND path=?", (sid, path)).fetchone()
+    if r is None:
+        parent, name = os.path.split(path)
+        d = db.execute(
+            "SELECT id FROM dirs WHERE snapshot_id=? AND path=?",
+            (sid, parent)).fetchone()
+        if d is not None:
+            r = db.execute(
+                "SELECT 'file' AS src, bytes_disk AS bd, bytes_logical AS bl,"
+                " CASE WHEN cloud_only=1 THEN bytes_logical ELSE 0 END AS bc,"
+                " 1 AS nf, mtime AS mt, cloud_only AS cl"
+                " FROM files WHERE dir_id=? AND name=?", (d[0], name)).fetchone()
     if r is None:
         r = db.execute(
             "SELECT 'dir' AS src, total_bytes_disk AS bd, total_bytes_logical AS bl,"
@@ -353,6 +379,15 @@ def run_batch(db, sid, data_dir=DATA_DIR):
     guard - one bad row must not ride along inside an otherwise fine batch.
     """
     plan = propose(db, sid)
+    # A mark on a path that is already gone can never act - it would sit there
+    # refusing every later batch. Prune only those; every other refusal still
+    # aborts the run.
+    stale = [e["path"] for e in plan["entries"] if e["guard"] == "not on disk"]
+    if stale:
+        db.executemany("DELETE FROM decisions WHERE path=?",
+                       [(p,) for p in stale])
+        db.commit()
+        plan = propose(db, sid)
     if not plan["actionable"]:
         return {"ok": False, "error": "nothing marked for deletion",
                 "entries": plan["entries"]}
@@ -396,6 +431,13 @@ def run_batch(db, sid, data_dir=DATA_DIR):
                              "freed": freed}, ensure_ascii=False) + "\n")
 
     done = [r["path"] for r in results if r["ok"]]
+    # Consumed marks: the manifest is their record now, and a leftover 'delete'
+    # mark on a recycled path would block the next batch as "not on disk".
+    if done:
+        db.executemany(
+            "DELETE FROM decisions WHERE path=? AND choice='delete'",
+            [(p,) for p in done])
+        db.commit()
     return {
         "ok": True, "batch": bid, "manifest": mpath, "results": results,
         "freed": freed,
@@ -511,6 +553,8 @@ def self_test():
               guard_reason(r"C:\ProgramData\x") is not None)
         check("guard refuses the tool itself",
               guard_reason(os.path.join(HERE, "app.py")) is not None)
+        check("guard refuses the profile root",
+              guard_reason(os.path.expanduser("~")) is not None)
         check("guard refuses nonexistent",
               guard_reason(base + " nope") is not None)
         check("guard allows scratch file", guard_reason(fa) is None,
