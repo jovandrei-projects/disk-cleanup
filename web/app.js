@@ -448,6 +448,16 @@ function sortedKids(node) {
     (a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
 }
 
+// Where an item sits in the pipeline: nothing -> marked -> (batch) -> bin ->
+// emptied. The row itself only knows its decision; recycled state lives in the
+// manifests, surfaced through the progress table in the sidebar.
+function stageTag(decision) {
+  if (decision === "delete")  return '<span class="tag st-marked">marked</span>';
+  if (decision === "keep")    return '<span class="tag st-keep">keep</span>';
+  if (decision === "unsure")  return '<span class="tag st-unsure">unsure</span>';
+  return "";
+}
+
 function leafRow(c, label) {
   const m = age(c.mtime);
   return '<div class="trow' + (c.decision ? " decided-" + c.decision : "") + '">' +
@@ -456,7 +466,8 @@ function leafRow(c, label) {
     '<span class="tname">' +
       (c.dir_id ? '<a href="#" data-dir="' + c.dir_id + '">' + esc(label) + "</a>"
                 : esc(label)) +
-      ' <span class="treason">' + esc(c.reason) + "</span></span>" +
+      ' <span class="treason">' + esc(c.reason) + "</span>" +
+      stageTag(c.decision) + "</span>" +
     '<span class="tsize">' + size(c.bytes_disk) + "</span>" +
     '<span class="tfiles">' + (c.n_files > 1 ? c.n_files.toLocaleString() : "") + "</span>" +
     '<span class="tage ' + m.cls + '">' + m.text + "</span>" +
@@ -501,6 +512,7 @@ function dupMemberRow(m) {
                 : esc(m.path)) +
       (m.shared ? '<span class="tag">hard link</span>' : "") +
       (m.protected ? '<span class="tag">system area - report only</span>' : "") +
+      stageTag(m.decision) +
     "</span>" +
     '<span class="tsize">' + size(m.bytes_disk) + "</span>" +
     '<span class="tfiles"></span>' +
@@ -534,7 +546,7 @@ const DUP_TERRITORY_META = {
     "nothing to do here."],
 };
 
-function dupFilesSection(dups) {
+function dupFilesSection(dups, terrSet) {
   const head = '<h3 style="margin:20px 0 6px;font-size:13px">Duplicate files';
   if (!dups || dups.computed_for == null)
     return head + "</h3>" +
@@ -560,7 +572,8 @@ function dupFilesSection(dups) {
     (groups[a.territory] = groups[a.territory] || []).push(a);
   const order = ["personal", "appdata", "system"];
   const rest = Object.keys(groups).filter(k => !order.includes(k)).sort();
-  const subsections = order.concat(rest).filter(k => groups[k]).map(k => {
+  const subsections = order.concat(rest)
+    .filter(k => groups[k] && (!terrSet || terrSet.has(k))).map(k => {
     const list = groups[k];
     const rec = list.reduce((a, x) => a + x.rec, 0);
     const meta = DUP_TERRITORY_META[k] ||
@@ -591,6 +604,9 @@ function dupFilesSection(dups) {
           : "") + "</p>" +
       '<ul class="tree">' + lis + "</ul></details>";
   }).join("");
+  const hidden = terrSet ? annotated.length -
+      order.concat(rest).filter(k => groups[k] && terrSet.has(k))
+        .reduce((a, k) => a + groups[k].length, 0) : 0;
   return head + " - " + dups.sets.length + " proven sets</h3>" +
     (stale ? '<p class="hint" style="margin:0 0 8px">Computed against snapshot ' +
       dups.computed_for + " \u2014 re-run <code>python analyze.py --dupes</code> " +
@@ -598,8 +614,9 @@ function dupFilesSection(dups) {
     '<p class="hint" style="margin:0 0 8px">Every copy in a set is ' +
     "byte-identical (SHA-256). Sets are split by where the copies live - " +
     "only <b>personal</b> sets are yours to prune; tick the copies you " +
-    "would remove.</p>" +
-    subsections;
+    "would remove." +
+    (hidden ? " " + hidden.toLocaleString() + " sets hidden by the sidebar filter." : "") +
+    "</p>" + subsections;
 }
 
 function dupTreesSection(t) {
@@ -674,13 +691,159 @@ const KIND_META = {
     "Watched already, or never will be?"],
 };
 
+// Sidebar filter state. null means "everything shown"; a Set means only
+// those members are shown. Persisted for the session so re-renders (e.g.
+// after ticking a mark) do not lose the user's place.
+let RECO = null;
+let RECO_KINDS = null, RECO_STATES = null, RECO_TERR = null;
+
+// The pipeline a reclaimable item walks: suggested -> marked -> recycled
+// (in the Bin, restorable) -> freed (bin emptied, permanent). Apps walk
+// marked -> uninstalled instead.
+function recoProgress(d, hist, plan) {
+  const byState = {};
+  for (const c of d.items) {
+    const s = c.decision || "suggested";
+    const g = byState[s] = byState[s] || { n: 0, bytes: 0 };
+    g.n++; g.bytes += c.bytes_disk;
+  }
+  const freedBytes = hist.manifests
+    .reduce((a, m) => a + (m.freed > 0 ? m.freed : 0), 0);
+  const recycled = hist.manifests.filter(m => m.items).length;
+  const appsDone = hist.apps.filter(a => a.done_at).length;
+  const row = (label, n, bytes) =>
+    '<tr><td>' + label + '</td><td class="num">' + n.toLocaleString() +
+    '</td><td class="num">' + (bytes ? size(bytes) : "") + "</td></tr>";
+  const rows = [];
+  for (const s of ["suggested", "delete", "unsure", "keep"])
+    if (byState[s]) rows.push(row(
+      s === "delete" ? "marked" : s, byState[s].n, byState[s].bytes));
+  if (plan.bin.bytes)
+    rows.push(row("in Recycle Bin", plan.bin.files, plan.bin.bytes));
+  if (freedBytes)
+    rows.push(row("freed permanently", recycled + " batches", freedBytes));
+  if (hist.apps.length)
+    rows.push(row("apps uninstalled", appsDone + " / " + hist.apps.length, 0));
+  return '<table class="stagetable">' + rows.join("") + "</table>";
+}
+
+// Computed "what now" - the top of the sidebar. Each action links to the
+// tab that does it or flips a sidebar filter to surface the items.
+function recoActions(d, td, hist, plan) {
+  const acts = [];
+  const actionable = plan.entries.filter(e => !e.guard);
+  if (actionable.length)
+    acts.push({ t: "Run the reclaim batch",
+      s: actionable.length + " marked items, " + size(plan.total_disk) +
+         " to the Bin", tab: "reclaim" });
+  if (plan.bin.bytes > 500 * 1024 * 1024)
+    acts.push({ t: "Empty the Recycle Bin",
+      s: size(plan.bin.bytes) + " - permanent, frees the space", tab: "reclaim" });
+  const pendingApps = hist.apps.filter(a => !a.done_at);
+  if (pendingApps.length)
+    acts.push({ t: pendingApps.length + " apps still marked",
+      s: size(pendingApps.reduce((a, x) => a + (x.bytes || 0), 0)) +
+         " - uninstallers are Windows' job", tab: "history" });
+  const unmarkedInst = d.items.filter(
+    c => c.kind === "installer" && !c.decision);
+  if (unmarkedInst.length)
+    acts.push({ t: "Review leftover installers",
+      s: unmarkedInst.length + " items, " +
+         size(unmarkedInst.reduce((a, c) => a + c.bytes_disk, 0)),
+      kind: "installer" });
+  const personalDups = d.dup_sets.sets ? d.dup_sets.sets.filter(s =>
+      s.members.every(m => territoryOf(m.path) === "personal") &&
+      !s.members.some(m => m.decision)) : [];
+  if (personalDups.length) {
+    const rec = personalDups.reduce((a, s) =>
+      a + Math.max(0, new Set(s.members.map(m => m.ino)).size - 1) *
+        s.bytes_logical, 0);
+    acts.push({ t: "Pick keepers in personal duplicates",
+      s: personalDups.length + " sets, ~" + size(rec) + " reclaimable",
+      terr: "personal" });
+  }
+  if (!d.dup_sets.computed_for || d.dup_sets.computed_for !== SNAP.id)
+    acts.push({ t: "Dup analysis is stale",
+      s: "run python analyze.py --dupes against snapshot " + SNAP.id });
+  if (!acts.length)
+    acts.push({ t: "Nothing pending", s: "the pipeline is empty - rescan or review a tier" });
+  return acts.map(a =>
+    '<button class="nxbtn"' +
+      (a.tab ? ' data-tab="' + a.tab + '"' : "") +
+      (a.kind ? ' data-recokind="' + a.kind + '"' : "") +
+      (a.terr ? ' data-recoterr="' + a.terr + '"' : "") + ">" +
+      "<b>" + esc(a.t) + "</b><span>" + esc(a.s) + "</span></button>").join("");
+}
+
+function recoFilters(d) {
+  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
+  const box = (attr, val, label, detail, set) =>
+    '<label class="flt"><input type="checkbox" ' + attr + '="' + val + '"' +
+      (!set || set.has(val) ? " checked" : "") +
+      "><span>" + esc(label) + "</span>" +
+      '<span class="fltdet">' + esc(detail || "") + "</span></label>";
+  const stateRows = [["none", "suggested"], ["delete", "marked"],
+    ["unsure", "unsure"], ["keep", "keep"]]
+    .map(([v, l]) => box("data-fstate", v, l, "", RECO_STATES)).join("");
+  const kinds = {};
+  for (const c of d.items) (kinds[c.kind] = kinds[c.kind] || []).push(c);
+  const kindRows = Object.entries(kinds)
+    .sort((a, b) => sum(b[1]) - sum(a[1]))
+    .map(([k, list]) => box("data-fkind", k,
+      (KIND_META[k] || [k])[0],
+      list.length.toLocaleString() + " / " + size(sum(list)), RECO_KINDS)).join("");
+  const terrs = {};
+  if (d.dup_sets.sets)
+    for (const s of d.dup_sets.sets) {
+      const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort().join("+");
+      terrs[t] = (terrs[t] || 0) + 1;
+    }
+  const terrRows = Object.entries(terrs)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, n]) => box("data-fterr", t,
+      (DUP_TERRITORY_META[t] || ["mixed: " + t])[0],
+      n.toLocaleString() + " sets", RECO_TERR)).join("");
+  // The delegated change handler rebuilds a filter Set from these full
+  // lists, so they must live somewhere the handler can reach.
+  RECO.opts = { states: ["none", "delete", "unsure", "keep"],
+                kinds: Object.keys(kinds), terrs: Object.keys(terrs) };
+  return '<div class="side-h">decision</div>' + stateRows +
+    '<div class="side-h">category</div>' + kindRows +
+    (terrRows ? '<div class="side-h">dup territory</div>' + terrRows : "");
+}
+
+// Toggle one filter value. null means "everything"; a smaller Set means
+// only those show. Re-checking every box collapses back to null.
+function recoToggle(which, val, on) {
+  const all = RECO.opts[which];
+  const cur = which === "states" ? RECO_STATES
+            : which === "kinds" ? RECO_KINDS : RECO_TERR;
+  const set = new Set(cur || all);
+  if (on) set.add(val); else set.delete(val);
+  const next = set.size === all.length ? null : set;
+  if (which === "states") RECO_STATES = next;
+  else if (which === "kinds") RECO_KINDS = next;
+  else RECO_TERR = next;
+  drawReco();
+}
+
 async function renderRecommended() {
   busy();
-  const [d, td] = await Promise.all([
-    api("/api/candidates"), api("/api/treedups")]);
-  const A = d.items.filter(c => c.tier === "A");
-  const B = d.items.filter(c => c.tier === "B");
+  const [d, td, hist, plan] = await Promise.all([
+    api("/api/candidates"), api("/api/treedups"),
+    api("/api/history"), api("/api/reclaim")]);
+  RECO = { d, td, hist, plan };
+  drawReco();
+}
+
+function drawReco() {
+  const { d, td, hist, plan } = RECO;
   const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
+  const shown = c =>
+    (!RECO_KINDS || RECO_KINDS.has(c.kind)) &&
+    (!RECO_STATES || RECO_STATES.has(c.decision || "none"));
+  const A = d.items.filter(c => c.tier === "A" && shown(c));
+  const B = d.items.filter(c => c.tier === "B" && shown(c));
 
   const section = (title, sub, items) => {
     if (!items.length) return "";
@@ -707,6 +870,16 @@ async function renderRecommended() {
   };
 
   view.innerHTML =
+    '<div class="reco">' +
+    '<aside class="reco-side">' +
+      '<div class="sideblock"><div class="side-h">next actions</div>' +
+        recoActions(d, td, hist, plan) + "</div>" +
+      '<div class="sideblock"><div class="side-h">progress</div>' +
+        recoProgress(d, hist, plan) + "</div>" +
+      '<div class="sideblock"><div class="side-h">filter</div>' +
+        recoFilters(d) + "</div>" +
+    "</aside>" +
+    '<div class="reco-main">' +
     '<div class="note">Everything the other views know about, condensed into ' +
     'groups. <b>Safe</b> means empty, regenerable, or already deleted once. ' +
     '<b>Decide</b> means real data: the tool can put the number in front of you ' +
@@ -725,8 +898,9 @@ async function renderRecommended() {
       '<span class="path" id="copied"></span></div>' +
     section("Safe to remove", "Empty, regenerable, or already in the Bin.", A) +
     section("Decide", "Big, dormant or redundant - review before anything happens.", B) +
-    dupFilesSection(d.dup_sets) +
-    dupTreesSection(td);
+    dupFilesSection(d.dup_sets, RECO_TERR) +
+    dupTreesSection(td) +
+    "</div></div>";
 
   document.getElementById("copychecked").onclick = async () => {
     const paths = [...document.querySelectorAll("input[data-mark]:checked")]
@@ -739,6 +913,9 @@ async function renderRecommended() {
     view.querySelectorAll("details.tdir").forEach(x => x.open = true);
   document.getElementById("collapseall").onclick = () =>
     view.querySelectorAll("details.tdir").forEach(x => x.open = false);
+  // Sidebar filter boxes and next-action buttons are wired through the
+  // delegated document listeners below (see data-fstate / data-recokind),
+  // so a redraw never needs to re-bind.
 }
 
 // ------------------------------------------------------------------ reclaim
@@ -1124,6 +1301,19 @@ document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { e.preventDefault(); show(tab.dataset.tab); return; }
 
+  const rk = e.target.closest("button[data-recokind]");
+  if (rk && RECO) {
+    RECO_KINDS = new Set([rk.dataset.recokind]);
+    drawReco();
+    return;
+  }
+  const rt = e.target.closest("button[data-recoterr]");
+  if (rt && RECO) {
+    RECO_TERR = new Set([rt.dataset.recoterr]);
+    drawReco();
+    return;
+  }
+
   const dir = e.target.closest("[data-dir]");
   if (dir) {
     e.preventDefault();
@@ -1196,7 +1386,19 @@ document.addEventListener("click", e => {
 // survives rescans and is what Phase 4 will act on.
 document.addEventListener("change", e => {
   const mark = e.target.closest("input[data-mark]");
-  if (!mark) return;
+  if (!mark) {
+    // Sidebar filters on the Recommended view.
+    if (!RECO || TAB !== "recommended") return;
+    const box = e.target.closest(
+      "input[data-fstate],input[data-fkind],input[data-fterr]");
+    if (!box) return;
+    const which = box.dataset.fstate !== undefined ? "states"
+      : box.dataset.fkind !== undefined ? "kinds" : "terrs";
+    recoToggle(which,
+      box.dataset.fstate || box.dataset.fkind || box.dataset.fterr,
+      box.checked);
+    return;
+  }
   const choice = mark.checked ? "delete" : "unsure";
   fetch("/api/decide", {
     method: "POST",

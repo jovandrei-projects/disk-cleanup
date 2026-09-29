@@ -104,7 +104,8 @@ function assertRendered(name, mustContain) {
 
   const cases = [
     ["recommended", ["Safe to remove", "Decide", 'class="tree"', "data-mark=",
-                     "Duplicate files", "Duplicate folders"]],
+                     "Duplicate files", "Duplicate folders", "next actions",
+                     "progress", "dup territory"]],
     ["reclaim", ["Proposed batch", "Recycle Bin", "never-touch",
                  "Batch history", "marked for deletion"]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
