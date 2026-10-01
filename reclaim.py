@@ -339,7 +339,12 @@ def _path_size(db, sid, path):
 
 
 def propose(db, sid):
-    """The batch the current 'delete' marks imply, with per-path verdicts."""
+    """The batch the current 'delete' marks imply, with per-path verdicts.
+
+    Marks whose path is already gone are consumed here, not listed: the
+    mark's intent (the file is gone) is already met, and leaving it would
+    block every later batch behind an unmark chore. The viewer surfaces the
+    count via `pruned`."""
     marks = db.execute(
         "SELECT path, decided_at FROM decisions WHERE choice='delete'"
         " ORDER BY decided_at").fetchall()
@@ -355,12 +360,20 @@ def propose(db, sid):
             src=info["src"], bytes_disk=info["bd"], bytes_logical=info["bl"],
             bytes_cloud=info["bc"], n_files=info["nf"], mtime=info["mt"],
             cloud_only=bool(info["cl"])))
+    stale = [e["path"] for e in entries if e["guard"] == "not on disk"]
+    if stale:
+        db.executemany("DELETE FROM decisions WHERE path=? AND choice='delete'",
+                       [(p,) for p in stale])
+        db.commit()
+        entries = [e for e in entries if e["guard"] != "not on disk"]
     actionable = [e for e in entries if e["guard"] is None]
     return {
         "entries": entries,
         "actionable": len(actionable),
         "total_disk": sum(e["bytes_disk"] for e in actionable),
         "blocked": [e for e in entries if e["guard"]],
+        "pruned": len(stale),
+        "pruned_paths": stale,
         "can_run": bool(actionable) and not any(e["guard"] for e in entries),
     }
 
@@ -378,22 +391,21 @@ def covering_parents(paths):
     return [orig[n] for n in out]
 
 
-def run_batch(db, sid, data_dir=DATA_DIR):
+def run_batch(db, sid, data_dir=DATA_DIR, progress=None):
     """Send every 'delete' mark to the Recycle Bin. Manifest first, always.
 
     Aborts before touching anything if any marked path is refused by the
     guard - one bad row must not ride along inside an otherwise fine batch.
+
+    `progress`, when given, is called with a dict per event so a caller can
+    show the batch moving: {"ev":"start"|"ok"|"fail"|"covered", "path":,
+    "i":, "n":, "err":}. A path inside a directory already recycled by this
+    batch reports "covered" instead of failing on file-not-found - it left
+    the disk with its parent and restores with it.
     """
     plan = propose(db, sid)
-    # A mark on a path that is already gone can never act - it would sit there
-    # refusing every later batch. Prune only those; every other refusal still
-    # aborts the run.
-    stale = [e["path"] for e in plan["entries"] if e["guard"] == "not on disk"]
-    if stale:
-        db.executemany("DELETE FROM decisions WHERE path=?",
-                       [(p,) for p in stale])
-        db.commit()
-        plan = propose(db, sid)
+    # propose already consumed marks whose paths are gone; the check stays as
+    # a second line because the set can change between the two calls.
     if not plan["actionable"]:
         return {"ok": False, "error": "nothing marked for deletion",
                 "entries": plan["entries"]}
@@ -407,31 +419,52 @@ def run_batch(db, sid, data_dir=DATA_DIR):
     free_before = volume_info(os.path.splitdrive(plan["entries"][0]["path"])[0]
                               + "\\")[1]
     results = []
+    n = len(plan["entries"])
+    done_dirs = []
     # If the manifest cannot be opened and written, the batch does not run.
     with open(mpath, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"batch": bid, "action": "begin", "ts": time.time(),
-                             "n": len(plan["entries"])},
+                             "n": n},
                             ensure_ascii=False) + "\n")
         fh.flush()
         started = time.time()
-        for e in plan["entries"]:
+        for i, e in enumerate(plan["entries"], 1):
             rec = {"batch": bid, "ts": time.time(), "action": "recycle",
                    "path": e["path"], "bytes_disk": e["bytes_disk"],
                    "decision": "delete", "decided_at": e["decided_at"]}
-            try:
-                st = os.stat(win(e["path"]))
-                rec["attrs"] = getattr(st, "st_file_attributes", None)
-                send_to_bin(e["path"])
-                pair = find_in_bin(e["path"], since=started - 60)
-                if pair:
-                    rec["bin_i"], rec["bin_r"] = pair
+            if progress:
+                progress({"ev": "start", "i": i, "n": n, "path": e["path"]})
+            np = normpath(e["path"])
+            cover = next((d for d in done_dirs
+                          if np.startswith(d + "\\")), None)
+            if cover:
                 rec["ok"] = True
-            except OSError as exc:
-                rec["ok"] = False
-                rec["error"] = str(exc)
+                rec["covered_by"] = cover
+            else:
+                try:
+                    st = os.stat(win(e["path"]))
+                    rec["attrs"] = getattr(st, "st_file_attributes", None)
+                    # Whether it was a dir must be captured before the send -
+                    # afterwards the path no longer exists to ask.
+                    is_dir = bool(getattr(st, "st_file_attributes", 0) & 0x10)
+                    send_to_bin(e["path"])
+                    pair = find_in_bin(e["path"], since=started - 60)
+                    if pair:
+                        rec["bin_i"], rec["bin_r"] = pair
+                    rec["ok"] = True
+                    if is_dir:
+                        done_dirs.append(np)
+                except OSError as exc:
+                    rec["ok"] = False
+                    rec["error"] = str(exc)
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fh.flush()
             results.append(rec)
+            if progress:
+                progress({"ev": "covered" if rec.get("covered_by")
+                                else ("ok" if rec["ok"] else "fail"),
+                          "i": i, "n": n, "path": e["path"],
+                          "err": rec.get("error")})
         freed = volume_info("C:\\")[1] - free_before
         fh.write(json.dumps({"batch": bid, "action": "done", "ts": time.time(),
                              "freed": freed}, ensure_ascii=False) + "\n")
@@ -462,6 +495,14 @@ def restore_manifest(mpath):
                 continue
             rec = json.loads(line)
             if rec.get("action") != "recycle" or not rec.get("ok"):
+                continue
+            # A "covered" entry went to the bin inside its recycled parent -
+            # it has no $I/$R pair of its own and comes back with the parent.
+            if rec.get("covered_by"):
+                back = os.path.lexists(win(rec["path"]))
+                out.append({"path": rec["path"], "restored": back,
+                            "error": None if back else
+                                     "its parent did not restore it"})
                 continue
             ipath, rpath = rec.get("bin_i"), rec.get("bin_r")
             try:

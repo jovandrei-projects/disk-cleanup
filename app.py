@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -391,6 +392,15 @@ class Store:
         """What the current 'delete' marks would do if run: per-path verdicts,
         the Recycle Bin's own footprint, and past batches."""
         plan = reclaim.propose(self.conn, self.sid)
+        # propose() consumes marks whose paths are gone; their 'delete' tags
+        # would otherwise linger in the cached candidate list, and the dead
+        # row keeps showing up in the recommendations until its parent dir
+        # is rescanned - queue that rescan now.
+        if plan.get("pruned"):
+            self._cache.pop("candidates", None)
+            parents = list(dict.fromkeys(
+                os.path.dirname(p) for p in plan["pruned_paths"]))
+            start_refresh(self, parents)
         plan["bin"] = reclaim.recycle_bin_size(self.conn, self.sid)
         plan["manifests"] = reclaim.list_manifests()
         return plan
@@ -522,11 +532,21 @@ class Handler(BaseHTTPRequestHandler):
                 # never lag behind the marks it acts on.
                 return self.send_json(s.proposed_batch())
             if u.path == "/api/refresh_status":
-                return self.send_json(REFRESH)
+                out = dict(REFRESH)
+                if out["running"]:
+                    out["line"] = read_progress(REFRESH_PROG)
+                return self.send_json(out)
             if u.path == "/api/reclaim_status":
                 return self.send_json(BATCH)
             if u.path == "/api/emptybin_status":
                 return self.send_json(EMPTYBIN)
+            if u.path == "/api/rescan_status":
+                out = dict(RESCAN)
+                if out["running"]:
+                    out["line"] = read_progress(RESCAN_PROG)
+                return self.send_json(out)
+            if u.path == "/api/oplog":
+                return self.send_json({"lines": list(OPLOG)})
             if u.path == "/api/reveal":
                 return self.send_json(reveal(qs.get("path", "")))
             self.send_error(404)
@@ -573,6 +593,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"results": reclaim.restore_manifest(mpath)})
             if u.path == "/api/emptybin":
                 return self.send_json(start_emptybin(s))
+            if u.path == "/api/rescan":
+                return self.send_json(start_rescan(s))
             if u.path == "/api/refresh":
                 paths = body.get("paths") or []
                 if not isinstance(paths, list) or not all(
@@ -602,6 +624,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
         except Exception as exc:
             self.send_json({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
+
+
+# A shared, timestamped line log of everything the background workers do -
+# the viewer shows it as the terminal under the pipeline. deque(maxlen) keeps
+# it bounded; /api/oplog serves the whole buffer.
+OPLOG = deque(maxlen=400)
+
+
+def oplog(msg):
+    OPLOG.append("%s  %s" % (time.strftime("%H:%M:%S"), msg))
+
+
+# scan.py --progress-file destinations for spawned walks. The file holds one
+# line, overwritten every couple of seconds while the walk runs.
+REFRESH_PROG = os.path.join(HERE, "data", "refresh.progress")
+RESCAN_PROG = os.path.join(HERE, "data", "scan.progress")
+
+
+def read_progress(path):
+    """Last line of a scan's progress file, or None if absent."""
+    try:
+        last = ""
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                last = line.strip()
+        return last or None
+    except OSError:
+        return None
 
 
 # Refreshing a subtree takes about a minute each, so it runs off-thread and
@@ -659,15 +709,20 @@ def _refresh_worker(store):
         while True:
             while REFRESH["queue"]:
                 p = REFRESH["queue"][0]
+                oplog("rescanning %s" % p)
+                t0 = time.time()
                 with open(log_path, "ab") as log:
                     log.write(("\n=== %s  %s ===\n" % (
                         p, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
                     log.flush()
-                    subprocess.run(
+                    rc = subprocess.run(
                         [sys.executable, os.path.join(HERE, "scan.py"),
-                         "--refresh", p],
-                        cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+                         "--refresh", p, "--progress-file", REFRESH_PROG],
+                        cwd=HERE, stdout=log, stderr=subprocess.STDOUT).returncode
                 REFRESH["done"].append(REFRESH["queue"].pop(0))
+                oplog("%s %s (%.0f s)" % (
+                    "rescanned" if rc == 0 else "rescan FAILED (exit %d):" % rc,
+                    p, time.time() - t0))
             if REFRESH["done"]:
                 # The views cache whole-table aggregates per snapshot, so the
                 # numbers a delete just changed only move once the store
@@ -676,8 +731,10 @@ def _refresh_worker(store):
                 try:
                     store.reload()
                     REFRESH["reloaded"] = True
+                    oplog("snapshot %d loaded" % store.sid)
                 except Exception as exc:
                     REFRESH["error"] = "%s: %s" % (type(exc).__name__, exc)
+                    oplog("snapshot reload failed: %s" % exc)
                 finally:
                     REFRESH["reloading"] = False
             # Work merged into the queue during the reload still gets done.
@@ -695,21 +752,48 @@ def _refresh_worker(store):
 # The batch worker opens its own connection: check_same_thread=False permits
 # sharing but concurrent calls on one connection are not safe, and WAL lets
 # a writer and the reader coexist anyway.
-BATCH = {"running": False, "result": None, "error": None}
+BATCH = {"running": False, "result": None, "error": None,
+         "rows": {}, "cur": None, "pos": None}
 EMPTYBIN = {"running": False, "result": None, "error": None}
+RESCAN = {"running": False, "error": None, "started_at": None,
+          "done_at": None, "snapshot": None}
 
 
 def start_batch(store):
     if BATCH["running"]:
         return {"ok": False, "error": "a batch is already running"}
-    BATCH.update(running=True, result=None, error=None)
+    BATCH.update(running=True, result=None, error=None,
+                 rows={}, cur=None, pos=None)
 
     def work():
         db = sqlite3.connect(store.path)
+
+        def prog(ev):
+            # Each event is one path: "start" pins it as the row being moved,
+            # the others settle it in `rows` for the per-row status paint.
+            BATCH["pos"] = "%d/%d" % (ev["i"], ev["n"])
+            if ev["ev"] == "start":
+                BATCH["cur"] = ev["path"]
+            elif ev["ev"] == "ok":
+                BATCH["rows"][ev["path"]] = "recycled"
+                oplog("recycled  %s" % ev["path"])
+            elif ev["ev"] == "covered":
+                BATCH["rows"][ev["path"]] = "covered"
+                oplog("recycled  %s (inside its parent)" % ev["path"])
+            else:
+                BATCH["rows"][ev["path"]] = "failed: " + (ev.get("err") or "")
+                oplog("FAILED    %s - %s" % (ev["path"], ev.get("err")))
+
         try:
-            BATCH["result"] = reclaim.run_batch(db, store.sid)
+            BATCH["result"] = reclaim.run_batch(db, store.sid, progress=prog)
             store._cache.pop("reclaim", None)
             res = BATCH["result"] or {}
+            if res.get("ok"):
+                oplog("batch %s done - %s recycled" % (
+                    res["batch"],
+                    sum(1 for r in res["results"] if r["ok"])))
+            else:
+                oplog("batch did not run: %s" % (res.get("error") or "?"))
             # The snapshot still shows the recycled bytes until the covering
             # parents are rescanned - queue that now rather than making the
             # user press "update the snapshot" by hand.
@@ -717,9 +801,11 @@ def start_batch(store):
                 start_refresh(store, res["parents"])
         except Exception as exc:
             BATCH["error"] = "%s: %s" % (type(exc).__name__, exc)
+            oplog("batch crashed: %s" % BATCH["error"])
         finally:
             db.close()
             BATCH["running"] = False
+            BATCH["cur"] = None
 
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "started": True}
@@ -731,9 +817,13 @@ def start_emptybin(store):
     EMPTYBIN.update(running=True, result=None, error=None)
 
     def work():
+        oplog("emptying the Recycle Bin (permanent)")
         try:
             EMPTYBIN["result"] = reclaim.empty_bin_logged()
             store._cache.pop("reclaim", None)
+            res = EMPTYBIN["result"] or {}
+            oplog("bin emptied - %s freed on the volume"
+                  % fmt_gb(res.get("freed")))
             # Same staleness fix as a batch: the bin's size lives in the
             # snapshot, so rescan the bin root or it keeps reporting the
             # pre-empty figure until someone rescans by hand.
@@ -743,8 +833,56 @@ def start_emptybin(store):
                 start_refresh(store, [binpath])
         except Exception as exc:
             EMPTYBIN["error"] = "%s: %s" % (type(exc).__name__, exc)
+            oplog("empty-bin failed: %s" % EMPTYBIN["error"])
         finally:
             EMPTYBIN["running"] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+def fmt_gb(b):
+    if b is None:
+        return "an unknown amount"
+    return "%.2f GB" % (b / 2 ** 30)
+
+
+# A full walk is ~10 minutes of subprocess work; it runs off-thread like the
+# other long operations and the store reloads the new snapshot when it lands.
+def start_rescan(store):
+    if RESCAN["running"]:
+        return {"ok": False, "error": "a rescan is already running"}
+    if REFRESH["running"]:
+        return {"ok": False,
+                "error": "a folder rescan is in progress - let it finish"}
+    RESCAN.update(running=True, error=None, started_at=time.time(),
+                  done_at=None, snapshot=None)
+    log_path = os.path.join(HERE, "data", "scan.log")
+
+    def work():
+        oplog("full rescan of %s started" % store.snap["root"].rstrip("\\"))
+        try:
+            with open(log_path, "ab") as log:
+                log.write(("\n=== rescan %s ===\n"
+                           % time.strftime("%Y-%m-%d %H:%M:%S")).encode("utf-8"))
+                log.flush()
+                rc = subprocess.run(
+                    [sys.executable, os.path.join(HERE, "scan.py"),
+                     "--progress-file", RESCAN_PROG],
+                    cwd=HERE, stdout=log, stderr=subprocess.STDOUT).returncode
+            if rc == 0:
+                store.reload()
+                RESCAN["snapshot"] = store.sid
+                oplog("rescan finished - snapshot %d loaded" % store.sid)
+            else:
+                RESCAN["error"] = "scan.py exited %d (data/scan.log)" % rc
+                oplog("rescan failed - %s" % RESCAN["error"])
+        except Exception as exc:
+            RESCAN["error"] = "%s: %s" % (type(exc).__name__, exc)
+            oplog("rescan failed - %s" % RESCAN["error"])
+        finally:
+            RESCAN["running"] = False
+            RESCAN["done_at"] = time.time()
 
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "started": True}

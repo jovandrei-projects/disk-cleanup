@@ -99,6 +99,7 @@ td.name { word-break: break-all; }
 .tag.empty { color: var(--bad); border-color: #4a2f2a; }
 
 .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.controls .selflex { flex: 1; }
 select, input {
   background: #22262e; color: var(--text); border: 1px solid var(--line);
   border-radius: 4px; padding: 4px 7px; font: inherit;
@@ -232,12 +233,64 @@ details.filt[open] > summary::before { content: "\25BE\00a0 "; }
 /* a ticked-but-not-applied row */
 .trow.staged { box-shadow: inset 2px 0 0 var(--accent); }
 
-/* markable rows get a real, visible checkbox; group boxes sit in summaries */
-.trow input[type="checkbox"], input.grpbox {
+/* markable rows get a real, visible checkbox */
+.trow input[type="checkbox"] {
   width: 14px; height: 14px; accent-color: var(--accent);
   cursor: pointer; margin: 0; flex: none;
 }
-details.tdir > summary > input.grpbox { margin-right: 8px; vertical-align: -2px; }
+
+/* group boxes are drawn spans (a focusable <input> inside <summary> trips
+   the accessibility audit); .on = all ticked, .mix = some */
+details.tdir > summary > .grpbox {
+  display: inline-block; width: 12px; height: 12px; margin-right: 8px;
+  border: 1px solid var(--dim); border-radius: 3px; cursor: pointer;
+  vertical-align: -1px; flex: none;
+}
+details.tdir > summary > .grpbox.on {
+  background: var(--accent); border-color: var(--accent);
+}
+details.tdir > summary > .grpbox.mix {
+  background: linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+  border-color: var(--accent);
+}
+
+/* the pipeline slice's stage cards - wait/run are blue, done green,
+   err red, same vocabulary as video-tools */
+.stepc {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 5px; padding: 10px 14px; margin: 12px 0;
+}
+.stepc .steph { font-size: 13px; font-weight: 600; margin-bottom: 8px;
+  display: flex; align-items: center; gap: 8px; }
+.stepc .sdot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+  flex: none;
+}
+.stepc .sstat { margin-left: auto; color: var(--dim); font-size: 11px;
+  font-weight: 400; }
+.stepc.run { border-left-color: var(--accent); }
+.stepc.run .sdot { animation: pulse 1.2s ease-in-out infinite; }
+.stepc.done { border-left-color: var(--good); }
+.stepc.done .sdot { background: var(--good); }
+.stepc.done .sstat { color: var(--good); }
+.stepc.err { border-left-color: var(--bad); }
+.stepc.err .sdot { background: var(--bad); }
+.stepc.err .sstat { color: var(--bad); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+
+/* the shared operation log under the pipeline - terminal look, tailed */
+.oplog {
+  background: #16181d; border: 1px solid var(--line); border-radius: 5px;
+  padding: 9px 12px; margin: 12px 0; max-height: 200px; overflow-y: auto;
+  font-size: 11.5px; line-height: 1.55; color: var(--dim);
+  white-space: pre-wrap; word-break: break-all;
+}
+
+/* batch row states painted live by the poller */
+.tag.run { color: var(--accent); border-color: #2a4a63; }
+.tag.ok { color: var(--good); border-color: #2a4638; }
+.tag.bad { color: var(--bad); border-color: #4a2f2a; }
+.note.ok { border-left-color: var(--good); }
 
 /* the numbered steps of the pipeline slice */
 h3.step {
@@ -260,6 +313,10 @@ details.elsewhere .tname { color: var(--dim); }
   white-space: nowrap; }
 
 .loading { color: var(--dim); padding: 20px 0; }
+/* Recommended's fetch checklist - each step greys in as its endpoint lands */
+.lsteps { margin-top: 8px; }
+.lstep { display: inline-block; margin: 0 10px 4px 0; opacity: 0.35; }
+.lstep.done { opacity: 1; color: var(--good); }
 .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 5px;

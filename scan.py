@@ -225,13 +225,17 @@ def unwin(path):
 
 
 class Scanner:
-    def __init__(self, db, root, cluster, quiet=False):
+    def __init__(self, db, root, cluster, quiet=False, progress_file=None):
         self.db = db
         self.root = root
         self.cluster = cluster
         # The in-place progress line only makes sense on a terminal; when output
         # is piped it just trails garbage after the report.
         self.quiet = quiet or not sys.stderr.isatty()
+        # A spawned scan is always piped (therefore quiet), so the viewer's
+        # caller passes a path here to still get the live line - overwritten
+        # on each tick, read by /api/refresh_status and /api/rescan_status.
+        self.progpath = progress_file
         self.n_dirs = 0
         self.n_files = 0
         self.n_errors = 0
@@ -247,16 +251,22 @@ class Scanner:
         self.error_rows.append((self.snapshot_id, unwin(path), kind, str(message)[:500]))
 
     def progress(self, path):
-        if self.quiet:
-            return
         now = time.monotonic()
         if now - self._last_report < 2.0:
             return
         self._last_report = now
-        sys.stderr.write(
-            "\r%7d dirs  %9d files  %7.1f GB on disk  %-58.58s"
-            % (self.n_dirs, self.n_files, self.bytes_disk / 2**30, unwin(path)[:58])
-        )
+        line = ("%7d dirs  %9d files  %7.1f GB on disk  %s"
+                % (self.n_dirs, self.n_files, self.bytes_disk / 2**30,
+                   unwin(path)[:58]))
+        if self.progpath:
+            try:
+                with open(self.progpath, "w", encoding="utf-8") as fh:
+                    fh.write(line.strip() + "\n")
+            except OSError:
+                pass
+        if self.quiet:
+            return
+        sys.stderr.write("\r" + "%-96.96s" % line)
         sys.stderr.flush()
 
     def flush(self, force=False):
@@ -485,6 +495,17 @@ def connect(db_path):
     return db
 
 
+def prog_note(path, text):
+    """Overwrite the --progress-file with a phase line between walk ticks."""
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    except OSError:
+        pass
+
+
 def cmd_scan(args):
     root = os.path.abspath(args.root).rstrip("\\") + "\\" if len(args.root) <= 3 else os.path.abspath(args.root)
     drive = os.path.splitdrive(root)[0] + "\\"
@@ -506,7 +527,8 @@ def cmd_scan(args):
     print("elevated: %s%s" % (elevated, "" if elevated else "  (ProgramData and other profiles will be partly hidden)"))
     print("")
 
-    sc = Scanner(db, root, cluster, quiet=args.quiet)
+    sc = Scanner(db, root, cluster, quiet=args.quiet,
+                 progress_file=args.progress_file)
     try:
         sc.run(snapshot_id)
     except KeyboardInterrupt:
@@ -517,6 +539,8 @@ def cmd_scan(args):
     sys.stderr.write("\r" + " " * 110 + "\r")
     sys.stderr.flush()
     print("walked %d dirs, %d files in %.0f s" % (sc.n_dirs, sc.n_files, time.time() - started))
+    prog_note(args.progress_file, "walked %d files - indexing and rolling up..."
+              % sc.n_files)
     finalize(db, snapshot_id)
     print("")
     return cmd_verify(args, db, snapshot_id)
@@ -640,6 +664,7 @@ def cmd_refresh(args):
 
     print("snapshot %d: refresh of %s, based on snapshot %d" % (new_sid, target_path, base))
     print("copying rows outside the subtree...", flush=True)
+    prog_note(args.progress_file, "copying unchanged rows...")
     t0 = time.time()
 
     # Copy dirs outside the subtree with fresh ids, remapping parent_id through
@@ -705,7 +730,8 @@ def cmd_refresh(args):
     print("  copied in %.0f s" % (time.time() - t0), flush=True)
 
     if os.path.isdir(win(target_path)):
-        sc = Scanner(db, target_path, cluster, quiet=args.quiet)
+        sc = Scanner(db, target_path, cluster, quiet=args.quiet,
+                     progress_file=args.progress_file)
         sc.run(new_sid, graft_parent=idmap.get(target_parent), graft_depth=target_depth)
     else:
         # The whole refresh target is gone; nothing to re-walk. That is the
@@ -713,6 +739,7 @@ def cmd_refresh(args):
         if normpath(target_path) == want:
             print("%s is gone; nothing to re-walk" % target_path)
 
+    prog_note(args.progress_file, "indexing and rolling up...")
     finalize(db, new_sid)
     print("")
     rc = cmd_verify(args, db, new_sid)
@@ -853,6 +880,9 @@ def main():
     p.add_argument("--refresh", metavar="PATH",
                    help="rescan one subtree into a new snapshot; use to verify "
                         "a deletion or pick up local changes without re-walking C:\\")
+    p.add_argument("--progress-file", metavar="PATH",
+                   help="write the current walk position to this file every "
+                        "few seconds (for callers that spawn the scan piped)")
     args = p.parse_args()
     if args.list_snapshots:
         return cmd_list(args)

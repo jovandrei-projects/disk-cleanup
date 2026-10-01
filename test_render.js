@@ -26,6 +26,7 @@ function makeEl(id) {
     dataset: {},
     addEventListener() {},
     closest() { return null; },
+    querySelector() { return null; },
     querySelectorAll() { return []; },
     classList: { toggle() {}, add() {}, remove() {} },
   };
@@ -150,8 +151,9 @@ function assertRendered(name, mustContain) {
     app.setFocus({ t: "pipeline" });
     app.drawReco();
     assertRendered("recommended focus: pipeline",
-      ["Send to the Recycle Bin", "Empty the Recycle Bin",
-       "id=\"runbatch\"", "id=\"emptybin\"", "id=\"pipestatus\""]);
+      ["Send the marked rows to the Bin", "Empty the Recycle Bin",
+       "rescan the whole drive", "id=\"runbatch\"", "id=\"emptybin\"",
+       "id=\"fullscan\"", "id=\"pipestatus\"", "id=\"oplog\"", "stepc"]);
     app.setFocus(null);
     app.drawReco();
     check("recommended overview returns",

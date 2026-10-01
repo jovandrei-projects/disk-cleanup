@@ -243,7 +243,11 @@ rescanned automatically (`scan.py --refresh` on the refresh thread) and the
 store reloads the new snapshot itself when the queue drains - no manual
 refresh or reload step. The never-touch list is enforced in
 `reclaim.guard_reason`; a batch containing a refused path aborts before
-touching anything.
+touching anything. Related machinery: `POST /api/rescan` runs a full `C:`
+walk off-thread; `/api/oplog` serves the timestamped worker log the UI
+shows as a terminal; `scan.py --progress-file` gives spawned walks a live
+one-line status file; and `reclaim.propose` consumes 'delete' marks whose
+path is gone (a stale mark's intent is met) instead of refusing forever.
 
 Verify a scan before building on it. `--verify` checks the rollup invariant -
 the root's subtree totals against the sums over `files` - and prints where the

@@ -90,12 +90,19 @@ Order set by the user 2026-09-28: bundled removals first, then granular.
 
 ## Where it stopped
 
-Phases 1-2 built and verified 2026-09-28: `reclaim.py` (primitive, guard,
-manifest, CLI), a Reclaim tab in the viewer, and endpoints
-`/api/reclaim|restore|emptybin|refresh|refresh_status|reload`. End-to-end
-proven over HTTP: mark a scratch file, POST recycle it, manifest written,
-restore brings it back. `reclaim.py --self-test` is green; `test_render.js`
-has a `reclaim` case and is green. Nothing real has been deleted.
+See the last session entry (2026-10-01 later) - progress/visibility pass
+landed and was verified live; commit is next. The user's WhatsApp Cache
+mark failed the live batch with Errno 124 (locked by the app?) - it stays
+marked and will be retried/refused on the next run; worth a look next
+session. Open roadmap asks unchanged: installers tier, personal dup split,
+video decision.
+
+Historical record: Phases 1-2 built and verified 2026-09-28: `reclaim.py`
+(primitive, guard, manifest, CLI), a Reclaim tab in the viewer, and
+endpoints `/api/reclaim|restore|emptybin|refresh|refresh_status|reload`.
+End-to-end proven over HTTP: mark a scratch file, POST recycle it,
+manifest written, restore brings it back. `reclaim.py --self-test` is
+green; `test_render.js` has a `reclaim` case and is green.
 
 2026-09-28 session: the user set Phase 3's order (apps, then caches, then
 folders/dups split personal vs system, video last) and answered the app
@@ -187,6 +194,48 @@ AGENTS.md trap 18. Gates: `node --check`, `py_compile`,
 `reclaim.py --self-test`, `test_render.js` all green (render test's
 "Duplicate files" overview expectation relaxed - dup rows legitimately
 vanish when analysis is stale for the loaded snapshot).
+
+2026-10-01 later: progress/visibility pass answering the second feedback
+round (batch ran with no visible progress; `refused: not on disk` rows left
+in the list; "loading..." opaque; parent checkboxes didn't mirror children;
+console warning about inputs in `<summary>`; no full-rescan action).
+
+- `reclaim.run_batch` takes a `progress(ev)` callback per path
+  (start/ok/fail/covered); a marked path inside a dir already recycled by
+  the same batch now reports `covered_by` instead of failing on
+  file-not-found, and `restore_manifest` knows covered entries return with
+  their parent's $I/$R pair. `propose` consumes 'delete' marks whose path
+  is gone (returns `pruned`/`pruned_paths`) instead of listing them as
+  refused - the mark's intent is already met.
+- `scan.py --progress-file PATH` overwrites one line with the live walk
+  phase (also "copying unchanged rows..."/"indexing and rolling up..." for
+  refreshes) so spawned quiet scans expose progress.
+- `app.py`: shared `OPLOG` deque served by `/api/oplog`; `BATCH` gains
+  `rows`/`cur`/`pos` for per-row paint; `start_rescan` worker +
+  `POST /api/rescan` runs a full walk off-thread and reloads the store;
+  `GET /api/reclaim` queues a `--refresh` of pruned marks' parents so
+  stale rows drop out of the recommendations; `REFRESH`/`RESCAN` status
+  gains a `line` field read from the progress file.
+- Frontend: pipeline slice is now four state cards (snapshot / send /
+  rescan-changed / empty) in the video-tools vocabulary - blue waiting/
+  running (pulsing dot), green done, red failed - plus a terminal `<pre>`
+  tailing `OPLOG`, a live "n/m - path" status line, and per-row status
+  painted into `.rowst` cells by the 2 s poller. `fullscan` button is the
+  explicit full rescan; a "Rescan the whole drive" entry sits in the
+  sidebar actions too. Group checkboxes became `<span class=grpbox>`
+  (kills the a11y warning), `.on`/`.mix` classes are re-mirrored on every
+  change so parent state always reflects children, groups with zero
+  tickable rows get no box, and dup-set first members are `data-keeper`
+  excluded from group/tick-all sweeps. Controls row gained "tick all
+  listed / tick none"; stale_large got explanatory copy; Recommended's
+  load shows per-endpoint progress via `busySteps`.
+- Verified live: marked a scratch dir + inner file + nonexistent path;
+  plan showed `pruned:1` and queued `dc-pipe-live2`'s rescan; batch rows
+  reported recycled/covered/failed (WhatsApp Cache failed Errno 124 - real
+  failure surfaced, not hidden); oplog tail showed all lines; 16 queued
+  subtree rescans drained and snapshot 11 -> 27 reloaded, which dropped
+  the user's stale `rxjs\dist` recommendation. Self-test + render gate
+  green.
 
 ## Deferred or blocked
 
