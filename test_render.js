@@ -26,6 +26,8 @@ function makeEl(id) {
     dataset: {},
     addEventListener() {},
     closest() { return null; },
+    querySelectorAll() { return []; },
+    classList: { toggle() {}, add() {}, remove() {} },
   };
 }
 
@@ -51,7 +53,7 @@ const src = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8");
 // Expose the module-scope bindings so each view can be driven individually.
 const shim = src + "\n;globalThis.__app = { RENDER, renderHeader, renderSearch, " +
   "getSnap: () => SNAP, setSnap: s => { SNAP = s; }, setDir: i => { DIR_ID = i; }, " +
-  "api };\n";
+  "drawReco, setFocus: f => { RECO_FOCUS = f; }, api };\n";
 
 vm.runInThisContext(shim, { filename: "web/app.js" });
 
@@ -103,9 +105,9 @@ function assertRendered(name, mustContain) {
         document.getElementById("usagebar").innerHTML.includes("seg-scanned"));
 
   const cases = [
-    ["recommended", ["Safe to remove", "Decide", 'class="tree"', "data-mark=",
-                     "Duplicate files", "Duplicate folders", "next actions",
-                     "progress", "dup territory"]],
+    ["recommended", ["next actions", "progress", "Safe to remove", "Decide",
+                     "Duplicate files", "Duplicate folders", 'data-focus=',
+                     "What needs a look"]],
     ["reclaim", ["Proposed batch", "Recycle Bin", "never-touch",
                  "Batch history", "marked for deletion"]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
@@ -127,6 +129,25 @@ function assertRendered(name, mustContain) {
     } catch (e) {
       check("view: " + tab, false, e.stack.split("\n").slice(0, 2).join(" | "));
     }
+  }
+
+  // A next action opens its slice in the main pane: tickable rows plus the
+  // staged-selection bar, and a way back to the board.
+  try {
+    app.setFocus({ t: "tier", v: "B" });
+    app.drawReco();
+    assertRendered("recommended focus: Decide",
+      ["all recommendations", "data-mark=", 'id="selbar"', "Decide"]);
+    app.setFocus({ t: "dups" });
+    app.drawReco();
+    assertRendered("recommended focus: dups",
+      ["Duplicate files", "all but 1st copy"]);
+    app.setFocus(null);
+    app.drawReco();
+    check("recommended overview returns",
+          view.innerHTML.includes("What needs a look"));
+  } catch (e) {
+    check("recommended focus", false, e.stack.split("\n").slice(0, 2).join(" | "));
   }
 
   view.innerHTML = "";

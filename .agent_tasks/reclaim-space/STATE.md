@@ -1,7 +1,7 @@
 # Task: Reclaim space - marked decisions become deletions, reversibly
 
 **Status:** in progress
-**Started:** 2026-09-28   **Last touched:** 2026-09-28
+**Started:** 2026-09-28   **Last touched:** 2026-09-30
 
 ## Objective
 
@@ -135,6 +135,19 @@ dup territory re-split; sweep remaining app crumbs if the user wants
 (Battle.net agent dir under ProgramData may remain - check snapshot 6).
 Then installers tier (~7 GB) and personal-territory dups (~6.4 GB).
 Still undecided: Midnight Protocol demo (1.8 GB Steam), video tier.
+
+2026-09-30: Recommended reworked per user feedback (too much info, no
+clear start). Overview is now a board of slices; clicking a next-action or
+board row opens a focused view whose ticks are *staged* - a fixed bottom bar
+applies them as one batch via `POST /api/decide {decisions:[[path,choice]]}`
+(new `Store.decide_many`). Tier-A unguarded rows pre-tick as a draft.
+Candidates now carry `guard` from `reclaim.guard_reason`, so protected rows
+(Recycle Bin, Windows Update, WER, WinSxS empties, running-app caches)
+render "handled elsewhere" with no checkbox - they could previously be
+marked and would then abort every batch. Sidebar filters collapsed into a
+"narrow this list" block inside the focused view. Also fixed: HTTP listen
+backlog 5 -> 64 (`Server.request_queue_size`), the cause of intermittent
+ECONNREFUSED when the page bursts parallel requests. Render gate green.
 
 ## Deferred or blocked
 

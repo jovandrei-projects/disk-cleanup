@@ -177,8 +177,60 @@ details.tdir[open] > summary::before { content: "\25BE"; /* ▾ */ }
   border-radius: 4px; padding: 7px 9px; margin-bottom: 6px; font: inherit;
 }
 .nxbtn:hover { border-color: var(--accent); }
+.nxbtn.on { border-color: var(--accent); background: #1e2b3a; }
 .nxbtn b { display: block; font-size: 12.5px; font-weight: 600; }
 .nxbtn span { color: var(--dim); font-size: 11.5px; }
+
+/* overview board: one row per unit of work, clickable into a focused view */
+.brow { cursor: pointer; }
+.brow.sub td.name { padding-left: 26px; color: var(--dim); }
+.brow td.name { font-weight: 500; }
+.brow.sub td.name { font-weight: 400; }
+
+/* focused slice header */
+.focushead { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+.focushead .focustitle { font-size: 14px; font-weight: 600; }
+
+/* the filters live inside the focused view, collapsed by default */
+details.filt {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
+  padding: 6px 10px; margin-bottom: 12px;
+}
+details.filt > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  color: var(--dim); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+details.filt > summary::before { content: "\25B8\00a0 "; }
+details.filt[open] > summary::before { content: "\25BE\00a0 "; }
+.filtcols { display: flex; gap: 30px; flex-wrap: wrap; margin-top: 8px; }
+.filtcol { min-width: 160px; }
+
+/* staged selection bar at the bottom of a focused slice */
+.selbar {
+  position: fixed; left: 282px; right: 16px; bottom: 0; z-index: 9;
+  background: var(--panel); border: 1px solid var(--line);
+  border-bottom: none; border-radius: 6px 6px 0 0;
+  padding: 8px 12px; display: flex; gap: 8px; align-items: center;
+  flex-wrap: wrap; box-shadow: 0 -8px 20px rgba(0,0,0,.4);
+}
+.selbar button {
+  background: #22262e; color: var(--text); border: 1px solid var(--line);
+  border-radius: 4px; padding: 5px 10px; font: inherit; cursor: pointer;
+}
+.selbar button:hover { border-color: var(--accent); }
+.selbar button.primary {
+  background: var(--disk); border-color: var(--disk);
+  color: #10141b; font-weight: 600;
+}
+.selbar button:disabled { opacity: .45; cursor: default; }
+.selbar .selstats { font-variant-numeric: tabular-nums; }
+.selbar .selflex { flex: 1; }
+.selbar .selreview { white-space: nowrap; }
+.reco-main.padbar { padding-bottom: 64px; }
+
+/* a ticked-but-not-applied row */
+.trow.staged { box-shadow: inset 2px 0 0 var(--accent); }
 
 .stagetable th, .stagetable td { padding: 2px 4px; font-size: 12px; }
 .stagetable td:first-child { color: var(--dim); }

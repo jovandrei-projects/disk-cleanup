@@ -326,8 +326,13 @@ class Store:
         data = analyze.candidates(self.conn, self.sid)
         marks = {r["path"]: r["choice"] for r in self.q(
             "SELECT path, choice FROM decisions")}
+        # The guard verdict rides along so the viewer can refuse a checkbox it
+        # could never honour - a 'delete' mark on a protected path aborts a
+        # whole batch, so it must not be tickable at all.
+        running = reclaim.running_processes()
         for c in data["items"]:
             c["decision"] = marks.get(c["path"])
+            c["guard"] = reclaim.guard_reason(c["path"], running)
         dups = analyze.dup_sets(self.conn, self.sid)
         for s in dups["sets"]:
             for m in s["members"]:
@@ -342,11 +347,17 @@ class Store:
         return analyze.software(self.conn, self.sid)
 
     def decide(self, path, choice):
-        self.conn.execute(
+        self.decide_many([(path, choice)])
+
+    def decide_many(self, pairs):
+        """Commit many (path, choice) decisions in one transaction - the
+        Recommended view's staged selection applies a whole slice at once."""
+        now = time.time()
+        self.conn.executemany(
             "INSERT INTO decisions (path, choice, decided_at) VALUES (?,?,?)"
             " ON CONFLICT(path) DO UPDATE SET choice=excluded.choice,"
             " decided_at=excluded.decided_at",
-            (path, choice, time.time()))
+            [(p, c, now) for p, c in pairs])
         self.conn.commit()
         self._cache.pop("candidates", None)
         self._cache.pop("reclaim", None)
@@ -411,6 +422,13 @@ class Store:
 
 
 # ----------------------------------------------------------------------- server
+
+
+class Server(HTTPServer):
+    # The page's first load and the Recommended tab fire bursts of parallel
+    # requests at a single-threaded server; the default backlog of 5 refuses
+    # the excess outright (ECONNREFUSED) instead of letting them wait.
+    request_queue_size = 64
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -517,10 +535,23 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
             s = self.store
             if u.path == "/api/decide":
+                CHOICES = ("keep", "delete", "archive", "unsure")
+                decisions = body.get("decisions")
+                if decisions is not None:
+                    # Staged selection from the Recommended focus view:
+                    # [[path, choice], ...] committed as one unit.
+                    ok = (isinstance(decisions, list)
+                          and 0 < len(decisions) <= 20000
+                          and all(isinstance(x, (list, tuple)) and len(x) == 2
+                                  and isinstance(x[0], str) and x[0].strip()
+                                  and x[1] in CHOICES for x in decisions))
+                    if not ok:
+                        return self.send_json({"error": "bad decision list"}, 400)
+                    s.decide_many([(x[0].strip(), x[1]) for x in decisions])
+                    return self.send_json({"ok": True, "n": len(decisions)})
                 path = (body.get("path") or "").strip()
                 choice = (body.get("choice") or "").strip()
-                if not path or choice not in ("keep", "delete", "archive",
-                                              "unsure"):
+                if not path or choice not in CHOICES:
                     return self.send_json({"error": "bad decision"}, 400)
                 s.decide(path, choice)
                 return self.send_json({"ok": True})
@@ -641,7 +672,7 @@ def main():
     print("serving %s   (ctrl-c to stop)" % url)
     if not args.no_browser:
         webbrowser.open(url)
-    HTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    Server(("127.0.0.1", args.port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

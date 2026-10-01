@@ -458,11 +458,30 @@ function stageTag(decision) {
   return "";
 }
 
+// A row's tick stages a mark; nothing is committed until the bottom bar's
+// apply. Rows the reclaim guard would refuse anyway get no box - a 'delete'
+// mark on a protected path aborts a whole batch, so it must not be tickable.
+function markBox(path, blocked) {
+  if (blocked)
+    return '<span class="tag" title="not batchable: ' +
+      esc(typeof blocked === "string" ? blocked : "protected system area") +
+      '">handled elsewhere</span>';
+  return '<input type="checkbox" data-mark="' + esc(path) + '"' +
+    (SEL && SEL.has(path) ? " checked" : "") + ">";
+}
+
+// A staged tick shows a marker until it is applied; a committed mark shows the
+// decided-* styling instead.
+function rowCls(decision, staged) {
+  return (decision ? " decided-" + decision : "") +
+    (staged && decision !== "delete" ? " staged" : "");
+}
+
 function leafRow(c, label) {
   const m = age(c.mtime);
-  return '<div class="trow' + (c.decision ? " decided-" + c.decision : "") + '">' +
-    '<input type="checkbox" data-mark="' + esc(c.path) + '"' +
-      (c.decision === "delete" ? " checked" : "") + ">" +
+  const staged = SEL && SEL.has(c.path);
+  return '<div class="trow' + rowCls(c.decision, staged) + '">' +
+    markBox(c.path, !c.decision && c.guard) +
     '<span class="tname">' +
       (c.dir_id ? '<a href="#" data-dir="' + c.dir_id + '">' + esc(label) + "</a>"
                 : esc(label)) +
@@ -504,9 +523,8 @@ function treeHTML(items) {
 // unticked copy stays - which is exactly the decision Phase 4 needs.
 function dupMemberRow(m) {
   const a = age(m.mtime);
-  return '<div class="trow' + (m.decision ? " decided-" + m.decision : "") + '">' +
-    '<input type="checkbox" data-mark="' + esc(m.path) + '"' +
-      (m.decision === "delete" ? " checked" : "") + ">" +
+  return '<div class="trow' + rowCls(m.decision, SEL && SEL.has(m.path)) + '">' +
+    markBox(m.path, m.protected && !m.decision) +
     '<span class="tname">' +
       (m.dir_id ? '<a href="#" data-dir="' + m.dir_id + '">' + esc(m.path) + "</a>"
                 : esc(m.path)) +
@@ -615,7 +633,7 @@ function dupFilesSection(dups, terrSet) {
     "byte-identical (SHA-256). Sets are split by where the copies live - " +
     "only <b>personal</b> sets are yours to prune; tick the copies you " +
     "would remove." +
-    (hidden ? " " + hidden.toLocaleString() + " sets hidden by the sidebar filter." : "") +
+    (hidden ? " " + hidden.toLocaleString() + " sets hidden by the filter." : "") +
     "</p>" + subsections;
 }
 
@@ -630,10 +648,12 @@ function dupTreesSection(t) {
       ? '<span class="tag regen">proven identical</span>'
       : '<span class="tag">' + esc(g.note || "unverified") + "</span>";
     const rows = g.members.map(m =>
-      '<div class="trow"><input type="checkbox" data-mark="' + esc(m.path) + '">' +
+      '<div class="trow' + rowCls(m.decision, SEL && SEL.has(m.path)) + '">' +
+      markBox(m.path, m.protected && !m.decision) +
       '<span class="tname"><a href="#" data-dir="' + m.dir_id + '">' +
         esc(m.path) + "</a>" +
         (m.protected ? '<span class="tag">system area - report only</span>' : "") +
+        stageTag(m.decision) +
       "</span>" +
       '<span class="tsize">' + size(m.bytes_disk) + "</span>" +
       '<span class="tfiles">' + m.n_files.toLocaleString() + "</span>" +
@@ -693,9 +713,22 @@ const KIND_META = {
 
 // Sidebar filter state. null means "everything shown"; a Set means only
 // those members are shown. Persisted for the session so re-renders (e.g.
-// after ticking a mark) do not lose the user's place.
+// after a mark is applied) do not lose the user's place.
 let RECO = null;
 let RECO_KINDS = null, RECO_STATES = null, RECO_TERR = null;
+
+// The focused slice: which "next action" is open in the main pane, or null
+// for the overview board. {t:"tier"|"kind"|"dups"|"trees", v}.
+let RECO_FOCUS = null;
+
+// Staged selection inside a focused slice. A tick never commits - the bottom
+// bar applies the whole visible selection as one batch of marks. SEL holds
+// every staged path so a redraw keeps the checked state; SEL_BYTES/SEL_DECID
+// map the slice's paths for the bar's counts and the apply diff.
+let SEL = null;
+let SEL_KEY = "";
+let SEL_BYTES = new Map();
+let SEL_DECID = new Map();
 
 // The pipeline a reclaimable item walks: suggested -> marked -> recycled
 // (in the Bin, restorable) -> freed (bin emptied, permanent). Apps walk
@@ -727,15 +760,18 @@ function recoProgress(d, hist, plan) {
   return '<table class="stagetable">' + rows.join("") + "</table>";
 }
 
-// Computed "what now" - the top of the sidebar. Each action links to the
-// tab that does it or flips a sidebar filter to surface the items.
+function focusAttr(f) { return f ? f.t + (f.v ? ":" + f.v : "") : ""; }
+
+// Computed "what now" - the sidebar's whole job. Pipeline steps link to the
+// tab that runs them; review slices open a focused view in the main pane.
 function recoActions(d, td, hist, plan) {
+  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
   const acts = [];
   const actionable = plan.entries.filter(e => !e.guard);
   if (actionable.length)
-    acts.push({ t: "Run the reclaim batch",
-      s: actionable.length + " marked items, " + size(plan.total_disk) +
-         " to the Bin", tab: "reclaim" });
+    acts.push({ t: "Send marked items to the Bin",
+      s: actionable.length + " marked items, " + size(plan.total_disk),
+      tab: "reclaim" });
   if (plan.bin.bytes > 500 * 1024 * 1024)
     acts.push({ t: "Empty the Recycle Bin",
       s: size(plan.bin.bytes) + " - permanent, frees the space", tab: "reclaim" });
@@ -744,72 +780,89 @@ function recoActions(d, td, hist, plan) {
     acts.push({ t: pendingApps.length + " apps still marked",
       s: size(pendingApps.reduce((a, x) => a + (x.bytes || 0), 0)) +
          " - uninstallers are Windows' job", tab: "history" });
-  const unmarkedInst = d.items.filter(
-    c => c.kind === "installer" && !c.decision);
-  if (unmarkedInst.length)
-    acts.push({ t: "Review leftover installers",
-      s: unmarkedInst.length + " items, " +
-         size(unmarkedInst.reduce((a, c) => a + c.bytes_disk, 0)),
-      kind: "installer" });
+  const A = d.items.filter(c => c.tier === "A");
+  if (A.length)
+    acts.push({ t: "Safe to remove", focus: { t: "tier", v: "A" },
+      s: A.length.toLocaleString() + " items, " + size(sum(A)) });
+  const B = d.items.filter(c => c.tier === "B");
+  if (B.length)
+    acts.push({ t: "Decide", focus: { t: "tier", v: "B" },
+      s: B.length.toLocaleString() + " candidates, " + size(sum(B)) });
   const personalDups = d.dup_sets.sets ? d.dup_sets.sets.filter(s =>
-      s.members.every(m => territoryOf(m.path) === "personal") &&
-      !s.members.some(m => m.decision)) : [];
+      s.members.every(m => territoryOf(m.path) === "personal")) : [];
   if (personalDups.length) {
     const rec = personalDups.reduce((a, s) =>
       a + Math.max(0, new Set(s.members.map(m => m.ino)).size - 1) *
         s.bytes_logical, 0);
     acts.push({ t: "Pick keepers in personal duplicates",
-      s: personalDups.length + " sets, ~" + size(rec) + " reclaimable",
-      terr: "personal" });
+      s: personalDups.length.toLocaleString() + " sets, ~" + size(rec) +
+         " reclaimable", focus: { t: "dups", v: "personal" } });
   }
+  if (td.groups && td.groups.length)
+    acts.push({ t: "Duplicate folders",
+      s: td.groups.length.toLocaleString() + " groups",
+      focus: { t: "trees" } });
   if (!d.dup_sets.computed_for || d.dup_sets.computed_for !== SNAP.id)
     acts.push({ t: "Dup analysis is stale",
       s: "run python analyze.py --dupes against snapshot " + SNAP.id });
   if (!acts.length)
-    acts.push({ t: "Nothing pending", s: "the pipeline is empty - rescan or review a tier" });
-  return acts.map(a =>
-    '<button class="nxbtn"' +
-      (a.tab ? ' data-tab="' + a.tab + '"' : "") +
-      (a.kind ? ' data-recokind="' + a.kind + '"' : "") +
-      (a.terr ? ' data-recoterr="' + a.terr + '"' : "") + ">" +
-      "<b>" + esc(a.t) + "</b><span>" + esc(a.s) + "</span></button>").join("");
+    acts.push({ t: "Nothing pending",
+      s: "the pipeline is empty - rescan or review a tier" });
+  const cur = focusAttr(RECO_FOCUS);
+  const btns = [];
+  if (RECO_FOCUS)
+    btns.push('<button class="nxbtn" data-focus=""><b>&#8249; overview</b>' +
+      "<span>back to the board</span></button>");
+  for (const a of acts)
+    btns.push('<button class="nxbtn' +
+        (a.focus && focusAttr(a.focus) === cur ? " on" : "") + '"' +
+        (a.tab ? ' data-tab="' + a.tab + '"' : "") +
+        (a.focus ? ' data-focus="' + focusAttr(a.focus) + '"' : "") + ">" +
+      "<b>" + esc(a.t) + "</b><span>" + esc(a.s) + "</span></button>");
+  return btns.join("");
 }
 
-function recoFilters(d) {
+// The filter checkboxes, embedded in the focused view where they apply rather
+// than living permanently in the sidebar. The delegated change handler
+// rebuilds a filter Set from these full lists, so they must be reachable.
+function recoFilters(d, wantStates, wantKinds, wantTerrs) {
   const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
   const box = (attr, val, label, detail, set) =>
     '<label class="flt"><input type="checkbox" ' + attr + '="' + val + '"' +
       (!set || set.has(val) ? " checked" : "") +
       "><span>" + esc(label) + "</span>" +
       '<span class="fltdet">' + esc(detail || "") + "</span></label>";
-  const stateRows = [["none", "suggested"], ["delete", "marked"],
-    ["unsure", "unsure"], ["keep", "keep"]]
-    .map(([v, l]) => box("data-fstate", v, l, "", RECO_STATES)).join("");
   const kinds = {};
   for (const c of d.items) (kinds[c.kind] = kinds[c.kind] || []).push(c);
-  const kindRows = Object.entries(kinds)
-    .sort((a, b) => sum(b[1]) - sum(a[1]))
-    .map(([k, list]) => box("data-fkind", k,
-      (KIND_META[k] || [k])[0],
-      list.length.toLocaleString() + " / " + size(sum(list)), RECO_KINDS)).join("");
   const terrs = {};
   if (d.dup_sets.sets)
     for (const s of d.dup_sets.sets) {
-      const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort().join("+");
+      const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
+        .join("+");
       terrs[t] = (terrs[t] || 0) + 1;
     }
-  const terrRows = Object.entries(terrs)
-    .sort((a, b) => b[1] - a[1])
-    .map(([t, n]) => box("data-fterr", t,
-      (DUP_TERRITORY_META[t] || ["mixed: " + t])[0],
-      n.toLocaleString() + " sets", RECO_TERR)).join("");
-  // The delegated change handler rebuilds a filter Set from these full
-  // lists, so they must live somewhere the handler can reach.
   RECO.opts = { states: ["none", "delete", "unsure", "keep"],
                 kinds: Object.keys(kinds), terrs: Object.keys(terrs) };
-  return '<div class="side-h">decision</div>' + stateRows +
-    '<div class="side-h">category</div>' + kindRows +
-    (terrRows ? '<div class="side-h">dup territory</div>' + terrRows : "");
+  const cols = [];
+  if (wantStates)
+    cols.push('<div class="filtcol"><div class="side-h">decision</div>' +
+      [["none", "suggested"], ["delete", "marked"], ["unsure", "unsure"],
+       ["keep", "keep"]]
+        .map(([v, l]) => box("data-fstate", v, l, "", RECO_STATES)).join("") +
+      "</div>");
+  if (wantKinds)
+    cols.push('<div class="filtcol"><div class="side-h">category</div>' +
+      Object.entries(kinds).sort((a, b) => sum(b[1]) - sum(a[1]))
+        .map(([k, list]) => box("data-fkind", k, (KIND_META[k] || [k])[0],
+          list.length.toLocaleString() + " / " + size(sum(list)),
+          RECO_KINDS)).join("") + "</div>");
+  if (wantTerrs)
+    cols.push('<div class="filtcol"><div class="side-h">dup territory</div>' +
+      Object.entries(terrs).sort((a, b) => b[1] - a[1])
+        .map(([t, n]) => box("data-fterr", t,
+          (DUP_TERRITORY_META[t] || ["mixed: " + t])[0],
+          n.toLocaleString() + " sets", RECO_TERR)).join("") + "</div>");
+  return cols.join("");
 }
 
 // Toggle one filter value. null means "everything"; a smaller Set means
@@ -829,46 +882,27 @@ function recoToggle(which, val, on) {
 
 async function renderRecommended() {
   busy();
-  const [d, td, hist, plan] = await Promise.all([
+  const [d, td, hist, plan, dec] = await Promise.all([
     api("/api/candidates"), api("/api/treedups"),
-    api("/api/history"), api("/api/reclaim")]);
-  RECO = { d, td, hist, plan };
+    api("/api/history"), api("/api/reclaim"), api("/api/decisions")]);
+  RECO = { d, td, hist, plan, marks: {} };
+  mergeMarks(dec);
   drawReco();
+}
+
+// The decisions map is keyed on path, so it covers tree-dup members too -
+// the treedups API never joins them. Merge here so every slice ticks alike.
+function mergeMarks(dec) {
+  const marks = {};
+  for (const m of dec.decisions) marks[m.path] = m.choice;
+  RECO.marks = marks;
+  if (RECO.td.groups)
+    for (const g of RECO.td.groups)
+      for (const m of g.members) m.decision = marks[m.path];
 }
 
 function drawReco() {
   const { d, td, hist, plan } = RECO;
-  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
-  const shown = c =>
-    (!RECO_KINDS || RECO_KINDS.has(c.kind)) &&
-    (!RECO_STATES || RECO_STATES.has(c.decision || "none"));
-  const A = d.items.filter(c => c.tier === "A" && shown(c));
-  const B = d.items.filter(c => c.tier === "B" && shown(c));
-
-  const section = (title, sub, items) => {
-    if (!items.length) return "";
-    const groups = {};
-    for (const c of items)
-      (groups[c.kind] = groups[c.kind] || []).push(c);
-    const subs = Object.values(groups)
-      .sort((a, b) => sum(b) - sum(a))
-      .map(list => {
-        const meta = KIND_META[list[0].kind] ||
-          [list[0].kind, list[0].reason || ""];
-        return '<details class="tdir"><summary>' +
-          '<span class="tdirname">' + esc(meta[0]) + "</span>" +
-          '<span class="tstats">' + list.length.toLocaleString() +
-            (list.length === 1 ? " item" : " items") + ", " +
-            size(sum(list)) + "</span></summary>" +
-          '<p class="hint" style="margin:4px 0 8px">' + esc(meta[1]) +
-            "</p>" + treeHTML(list) + "</details>";
-      }).join("");
-    return '<h3 style="margin:20px 0 6px;font-size:13px">' +
-      title + " - " + items.length.toLocaleString() + " candidates, " +
-      size(sum(items)) + "</h3>" +
-      '<p class="hint" style="margin:0 0 8px">' + sub + "</p>" + subs;
-  };
-
   view.innerHTML =
     '<div class="reco">' +
     '<aside class="reco-side">' +
@@ -876,46 +910,376 @@ function drawReco() {
         recoActions(d, td, hist, plan) + "</div>" +
       '<div class="sideblock"><div class="side-h">progress</div>' +
         recoProgress(d, hist, plan) + "</div>" +
-      '<div class="sideblock"><div class="side-h">filter</div>' +
-        recoFilters(d) + "</div>" +
     "</aside>" +
-    '<div class="reco-main">' +
-    '<div class="note">Everything the other views know about, condensed into ' +
-    'groups. <b>Safe</b> means empty, regenerable, or already deleted once. ' +
-    '<b>Decide</b> means real data: the tool can put the number in front of you ' +
-    'but only you know if you still want it. Tick what you would remove; marks ' +
-    'are saved and survive rescans. Nothing here deletes anything yet \u2014 ' +
-    'that is Phase 4, and it will use this list.</div>' +
-    '<div class="cards">' +
-      card(size(sum(A)), "safe tier total") +
-      card(size(sum(B)), "needs a decision") +
-      card(A.length.toLocaleString(), "safe candidates") +
-      card(B.length.toLocaleString(), "decision items") +
-    "</div>" +
-    '<div class="controls"><button id="copychecked">copy checked paths</button>' +
-      '<button id="expandall">expand all</button>' +
-      '<button id="collapseall">collapse all</button>' +
-      '<span class="path" id="copied"></span></div>' +
-    section("Safe to remove", "Empty, regenerable, or already in the Bin.", A) +
-    section("Decide", "Big, dormant or redundant - review before anything happens.", B) +
-    dupFilesSection(d.dup_sets, RECO_TERR) +
-    dupTreesSection(td) +
+    '<div class="reco-main' + (RECO_FOCUS ? " padbar" : "") + '">' +
+    (RECO_FOCUS ? focusBody() : overviewBody()) +
     "</div></div>";
 
-  document.getElementById("copychecked").onclick = async () => {
-    const paths = [...document.querySelectorAll("input[data-mark]:checked")]
-      .map(x => x.dataset.mark);
-    await navigator.clipboard.writeText(paths.join("\n"));
-    document.getElementById("copied").textContent =
-      paths.length + " paths copied";
-  };
-  document.getElementById("expandall").onclick = () =>
+  const ex = document.getElementById("expandall");
+  if (ex) ex.onclick = () =>
     view.querySelectorAll("details.tdir").forEach(x => x.open = true);
-  document.getElementById("collapseall").onclick = () =>
+  const co = document.getElementById("collapseall");
+  if (co) co.onclick = () =>
     view.querySelectorAll("details.tdir").forEach(x => x.open = false);
-  // Sidebar filter boxes and next-action buttons are wired through the
-  // delegated document listeners below (see data-fstate / data-recokind),
-  // so a redraw never needs to re-bind.
+  if (RECO_FOCUS) updateSelBar();
+  // Filter boxes, focus links and bar buttons are wired through the delegated
+  // document listeners below (data-fstate / data-focus / data-selact), so a
+  // redraw never needs to re-bind.
+}
+
+// ------------------------------------------------------------------ overview
+// The board: every unit of work as one row, so "where do I start" is answered
+// by the biggest unchecked line rather than a wall of nested trees.
+
+function overviewBody() {
+  const { d, td } = RECO;
+  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
+  const tally = items => {
+    const t = {};
+    for (const c of items)
+      if (c.decision) t[c.decision] = (t[c.decision] || 0) + 1;
+    const parts = [];
+    if (t.delete) parts.push(t.delete.toLocaleString() + " marked");
+    if (t.keep) parts.push(t.keep.toLocaleString() + " kept");
+    if (t.unsure) parts.push(t.unsure.toLocaleString() + " unsure");
+    return parts.join(" \u00b7 ");
+  };
+  const brow = (label, n, bytes, status, focus, sub, note) =>
+    '<tr class="brow' + (sub ? " sub" : "") + '" data-focus="' + focus + '">' +
+    '<td class="name">' + esc(label) +
+      (note ? '<div class="path">' + esc(note) + "</div>" : "") + "</td>" +
+    '<td class="num">' + n + "</td>" +
+    '<td class="num">' + (bytes ? size(bytes) : "") + "</td>" +
+    '<td class="num dim">' + esc(status || "") + "</td>" +
+    '<td class="num">&#8594;</td></tr>';
+
+  let rows = "";
+  for (const [tier, label, note] of [
+      ["A", "Safe to remove", "empty, regenerable or already deleted once"],
+      ["B", "Decide", "big, dormant or redundant - review before it goes"]]) {
+    const items = d.items.filter(c => c.tier === tier);
+    if (!items.length) continue;
+    rows += brow(label, items.length.toLocaleString(), sum(items),
+                 tally(items), "tier:" + tier, false, note);
+    const kinds = {};
+    for (const c of items) (kinds[c.kind] = kinds[c.kind] || []).push(c);
+    for (const [k, list] of Object.entries(kinds)
+        .sort((a, b) => sum(b[1]) - sum(a[1])))
+      rows += brow((KIND_META[k] || [k])[0], list.length.toLocaleString(),
+                   sum(list), tally(list), "kind:" + k, true);
+  }
+  if (d.dup_sets.sets && d.dup_sets.sets.length) {
+    const groups = {};
+    for (const s of d.dup_sets.sets) {
+      const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
+        .join("+");
+      const g = groups[t] = groups[t] || { n: 0, rec: 0, marked: 0 };
+      g.n++;
+      g.rec += Math.max(0, new Set(s.members.map(m => m.ino)).size - 1) *
+        s.bytes_logical;
+      g.marked += s.members.filter(m => m.decision === "delete").length;
+    }
+    const all = { n: 0, rec: 0, marked: 0 };
+    for (const g of Object.values(groups)) {
+      all.n += g.n; all.rec += g.rec; all.marked += g.marked;
+    }
+    rows += brow("Duplicate files", all.n.toLocaleString() + " sets", all.rec,
+      all.marked ? all.marked.toLocaleString() + " copies marked" : "", "dups",
+      false, "byte-identical sets - the size is what keeping one copy frees");
+    for (const [t, g] of Object.entries(groups)
+        .sort((a, b) => b[1].rec - a[1].rec))
+      rows += brow((DUP_TERRITORY_META[t] || ["mixed: " + t])[0],
+        g.n.toLocaleString() + " sets", g.rec,
+        g.marked ? g.marked.toLocaleString() + " marked" : "",
+        "dups:" + t, true);
+  }
+  if (td.groups && td.groups.length) {
+    const rec = td.groups.reduce((a, g) => a + g.reclaimable, 0);
+    const mk = td.groups.reduce((a, g) =>
+      a + g.members.filter(m => m.decision === "delete").length, 0);
+    rows += brow("Duplicate folders",
+      td.groups.length.toLocaleString() + " groups", rec,
+      mk ? mk.toLocaleString() + " marked" : "", "trees", false,
+      "whole folders that are copies of each other");
+  }
+  return '<div class="note">Everything the inventory flagged, as units of ' +
+    'work. Pick a next step on the left or a row below - each opens a focused ' +
+    'list where ticks are staged and applied from the bar at the bottom. ' +
+    'Nothing is deleted here: marks land on the Reclaim tab, which asks ' +
+    'again before anything moves.</div>' +
+    '<table><thead><tr><th>What needs a look</th><th class="num">items</th>' +
+    '<th class="num">on disk</th><th class="num">status</th>' +
+    '<th class="num"></th></tr></thead><tbody>' + rows + "</tbody></table>";
+}
+
+// -------------------------------------------------------------------- focus
+// One slice fills the main pane. Ticks stage a selection; the bottom bar
+// applies it as marks (and unmarks what you unticked), or marks keeps.
+
+function kindGroups(items, flat) {
+  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
+  if (!items.length) return "";
+  if (flat) return treeHTML(items);
+  const groups = {};
+  for (const c of items) (groups[c.kind] = groups[c.kind] || []).push(c);
+  return Object.values(groups)
+    .sort((a, b) => sum(b) - sum(a))
+    .map(list => {
+      const meta = KIND_META[list[0].kind] || [list[0].kind, list[0].reason || ""];
+      return '<details class="tdir"><summary>' +
+        '<span class="tdirname">' + esc(meta[0]) + "</span>" +
+        '<span class="tstats">' + list.length.toLocaleString() +
+          (list.length === 1 ? " item" : " items") + ", " +
+          size(sum(list)) + "</span></summary>" +
+        '<p class="hint" style="margin:4px 0 8px">' + esc(meta[1]) + "</p>" +
+        treeHTML(list) + "</details>";
+    }).join("");
+}
+
+function focusBody() {
+  const { d, td } = RECO;
+  const f = RECO_FOCUS;
+  const shownState = c => !RECO_STATES || RECO_STATES.has(c.decision || "none");
+  const terrOf = s =>
+    [...new Set(s.members.map(m => territoryOf(m.path)))].sort().join("+");
+
+  let title = "", sub = "", slice = [],
+      wantStates = false, wantKinds = false, wantTerrs = false;
+  const build = () => {
+    if (f.t === "tier" || f.t === "kind") {
+      const items = d.items.filter(c =>
+        (f.t === "kind" ? c.kind === f.v : c.tier === f.v) &&
+        shownState(c) &&
+        (f.t === "kind" || !RECO_KINDS || RECO_KINDS.has(c.kind)));
+      const meta = f.t === "kind" ? (KIND_META[f.v] || [f.v, ""])
+        : f.v === "A"
+          ? ["Safe to remove",
+             "Empty, regenerable or already deleted once. Unguarded rows " +
+             "come pre-ticked as a draft - expand a group to exclude what " +
+             "you want kept, then apply on the bar below."]
+          : ["Decide",
+             "Big, dormant or redundant - the tool can put the number in " +
+             "front of you but only you know if you still want it. Tick " +
+             "what goes; marks are staged until you apply them."];
+      title = meta[0]; sub = meta[1];
+      slice = items.map(c => ({ p: c.path, b: c.bytes_disk, dec: c.decision,
+        blocked: !!(c.guard && !c.decision), tier: c.tier }));
+      wantStates = true; wantKinds = f.t === "tier";
+      return kindGroups(items, f.t === "kind");
+    }
+    if (f.t === "dups") {
+      const terrSet = f.v ? new Set([f.v]) : RECO_TERR;
+      const meta = f.v ? (DUP_TERRITORY_META[f.v] || ["Duplicates", ""])
+        : ["Duplicate files",
+           "Every copy in a set is byte-identical (SHA-256). Pick the keeper " +
+           "in each set and tick the rest - 'all but 1st copy' drafts that " +
+           "choice for you."];
+      title = meta[0]; sub = meta[1];
+      for (const s of d.dup_sets.sets || []) {
+        if (terrSet && !terrSet.has(terrOf(s))) continue;
+        for (const m of s.members)
+          slice.push({ p: m.path, b: m.bytes_disk || m.bytes_logical,
+            dec: m.decision, blocked: !!(m.protected && !m.decision) });
+      }
+      wantTerrs = !f.v;
+      return dupFilesSection(d.dup_sets, terrSet);
+    }
+    if (f.t === "trees") {
+      title = "Duplicate folders";
+      sub = "Folders identical name-for-name and size-for-size at every " +
+            "level. Pick the copy to keep and tick the rest.";
+      for (const g of td.groups || [])
+        for (const m of g.members)
+          slice.push({ p: m.path, b: m.bytes_disk, dec: m.decision,
+                       blocked: !!(m.protected && !m.decision) });
+      return dupTreesSection(td);
+    }
+    return null;
+  };
+
+  // The slice's markable paths are known before the content is rendered,
+  // because SEL decides the checked state of every box inside it. preSlice
+  // ignores the display filters so staged ticks survive a narrowed view.
+  const preSlice = [];
+  if (f.t === "tier" || f.t === "kind")
+    for (const c of d.items)
+      if ((f.t === "kind" ? c.kind === f.v : c.tier === f.v))
+        preSlice.push({ p: c.path, b: c.bytes_disk, dec: c.decision,
+                        blocked: !!(c.guard && !c.decision), tier: c.tier });
+  else if (f.t === "dups") {
+    const tset = f.v ? new Set([f.v]) : null;
+    for (const s of d.dup_sets.sets || []) {
+      if (tset && !tset.has(terrOf(s))) continue;
+      for (const m of s.members)
+        preSlice.push({ p: m.path, b: m.bytes_disk || m.bytes_logical,
+          dec: m.decision, blocked: !!(m.protected && !m.decision) });
+    }
+  } else if (f.t === "trees")
+    for (const g of td.groups || [])
+      for (const m of g.members)
+        preSlice.push({ p: m.path, b: m.bytes_disk, dec: m.decision,
+                        blocked: !!(m.protected && !m.decision) });
+  initSel(preSlice);
+  const content = build();
+  if (content === null) { RECO_FOCUS = null; return overviewBody(); }
+
+  const guarded = preSlice.filter(r => r.blocked).length;
+  const totalBytes = slice.reduce((a, r) => a + r.b, 0);
+  const fInner = recoFilters(d, wantStates, wantKinds, wantTerrs);
+  return '<div class="focushead">' +
+      '<a href="#" data-focus="">&#8249; all recommendations</a>' +
+      '<span class="focustitle">' + esc(title) + "</span>" +
+      '<span class="tstats">' + slice.length.toLocaleString() +
+        " rows \u00b7 " + size(totalBytes) + "</span></div>" +
+    '<p class="hint">' + esc(sub) + "</p>" +
+    (guarded
+      ? '<p class="hint">' + guarded.toLocaleString() + " row(s) are tagged " +
+        '"handled elsewhere" - they sit under paths a batch can never touch ' +
+        "(the Bin empties from the Reclaim tab; update staging and error " +
+        "reports are Windows' own tools).</p>"
+      : "") +
+    (fInner
+      ? '<details class="filt"><summary>narrow this list</summary>' +
+        '<div class="filtcols">' + fInner + "</div></details>"
+      : "") +
+    '<div class="controls"><button id="expandall">expand all</button>' +
+      '<button id="collapseall">collapse all</button></div>' +
+    (content || '<p class="hint">Nothing matches those filters.</p>') +
+    '<div class="selbar" id="selbar"></div>';
+}
+
+// SEL holds the staged selection for the current focus. It resets when the
+// slice changes; a redraw of the same slice keeps it.
+function initSel(slice) {
+  SEL_BYTES = new Map();
+  SEL_DECID = new Map();
+  for (const r of slice) { SEL_BYTES.set(r.p, r.b); SEL_DECID.set(r.p, r.dec); }
+  const key = focusAttr(RECO_FOCUS);
+  if (SEL_KEY === key && SEL) return;
+  SEL_KEY = key;
+  SEL = new Set(slice.filter(r => r.dec === "delete").map(r => r.p));
+  // Tier A is the one slice where "take all of it" is a sane draft: every
+  // row is empty, regenerable or already deleted once. Still just staged.
+  for (const r of slice)
+    if (!r.dec && !r.blocked && r.tier === "A") SEL.add(r.p);
+}
+
+function syncStaged(b) {
+  const row = b.closest(".trow");
+  if (row)
+    row.classList.toggle("staged",
+      b.checked && SEL_DECID.get(b.dataset.mark) !== "delete");
+}
+
+// Rebuild the bottom bar's counts from the rendered boxes - the bar reports
+// (and apply acts on) what is shown, so a narrowed filter narrows both.
+function updateSelBar() {
+  const bar = document.getElementById("selbar");
+  if (!bar) return;
+  const boxes = [...view.querySelectorAll("input[data-mark]")];
+  let n = 0, bytes = 0, diff = 0, marked = 0, mbytes = 0;
+  for (const b of boxes) {
+    const p = b.dataset.mark, cur = SEL_DECID.get(p), sz = SEL_BYTES.get(p) || 0;
+    if (cur === "delete") { marked++; mbytes += sz; }
+    if (b.checked) { n++; bytes += sz; if (cur !== "delete") diff++; }
+    else if (cur === "delete") diff++;
+  }
+  const dupSlice =
+    RECO_FOCUS && (RECO_FOCUS.t === "dups" || RECO_FOCUS.t === "trees");
+  bar.innerHTML =
+    '<span class="selstats"><b>' + n.toLocaleString() + "</b> selected \u00b7 " +
+      size(bytes) + "</span>" +
+    '<button data-selact="all">select all</button>' +
+    '<button data-selact="none">clear</button>' +
+    (dupSlice
+      ? '<button data-selact="rest" title="tick every copy but the first ' +
+        'shown in each set">all but 1st copy</button>' : "") +
+    '<button data-selact="copy">copy paths</button>' +
+    '<span class="selflex"></span>' +
+    '<button data-selact="keep"' + (n ? "" : " disabled") +
+      ">mark checked as keep</button>" +
+    '<button class="primary" data-selact="del"' + (diff ? "" : " disabled") +
+      ">" + (diff ? "apply " + diff.toLocaleString() + " mark(s)"
+                  : "marks up to date") + "</button>" +
+    (marked
+      ? '<a href="#" data-tab="reclaim" class="selreview">' +
+        marked.toLocaleString() + " marked \u00b7 " + size(mbytes) +
+        " \u2192 review batch</a>" : "");
+}
+
+function selAction(act) {
+  const boxes = [...view.querySelectorAll("input[data-mark]")];
+  if (act === "copy") {
+    navigator.clipboard.writeText(
+      boxes.filter(b => b.checked).map(b => b.dataset.mark).join("\n"));
+    return;
+  }
+  if (act === "all" || act === "none") {
+    const on = act === "all";
+    for (const b of boxes) {
+      b.checked = on;
+      if (on) SEL.add(b.dataset.mark); else SEL.delete(b.dataset.mark);
+      syncStaged(b);
+    }
+    updateSelBar();
+    return;
+  }
+  if (act === "rest") {
+    // Draft a keeper pick for duplicate slices: tick every copy but the
+    // first shown in each set. Positional, not wisdom - adjust after.
+    let groups;
+    if (RECO_FOCUS.t === "dups") {
+      const terrSet = RECO_FOCUS.v ? new Set([RECO_FOCUS.v]) : RECO_TERR;
+      groups = (RECO.d.dup_sets.sets || [])
+        .filter(s => !terrSet || terrSet.has(
+          [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
+            .join("+")))
+        .map(s => s.members.map(m => m.path));
+    } else {
+      groups = (RECO.td.groups || []).map(g => g.members.map(m => m.path));
+    }
+    const boxSet = new Set(boxes.map(b => b.dataset.mark));
+    for (const members of groups)
+      for (const p of members.filter(p => boxSet.has(p)).slice(1))
+        SEL.add(p);
+    for (const b of boxes) {
+      b.checked = SEL.has(b.dataset.mark);
+      syncStaged(b);
+    }
+    updateSelBar();
+    return;
+  }
+  if (act === "del") applyMarks("delete");
+  if (act === "keep") applyMarks("keep");
+}
+
+// Commit the visible selection as one batch: checked rows become 'delete'
+// (or 'keep'), and a ticked-off row that was marked is unmarked to 'unsure'.
+// Rows hidden by the filter are not touched.
+async function applyMarks(choice) {
+  const boxes = [...view.querySelectorAll("input[data-mark]")];
+  const pairs = [];
+  for (const b of boxes) {
+    const p = b.dataset.mark, cur = SEL_DECID.get(p);
+    if (choice === "delete") {
+      if (b.checked && cur !== "delete") pairs.push([p, "delete"]);
+      else if (!b.checked && cur === "delete") pairs.push([p, "unsure"]);
+    } else if (b.checked && cur !== "keep") {
+      pairs.push([p, "keep"]);
+    }
+  }
+  if (!pairs.length) return;
+  try {
+    await apiPost("/api/decide", { decisions: pairs });
+    const [d, plan, dec] = await Promise.all([
+      api("/api/candidates"), api("/api/reclaim"), api("/api/decisions")]);
+    RECO.d = d;
+    RECO.plan = plan;
+    mergeMarks(dec);
+    drawReco();
+  } catch (e2) {
+    alert("marks not saved: " + e2.message);
+  }
 }
 
 // ------------------------------------------------------------------ reclaim
@@ -1301,16 +1665,25 @@ document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { e.preventDefault(); show(tab.dataset.tab); return; }
 
-  const rk = e.target.closest("button[data-recokind]");
-  if (rk && RECO) {
-    RECO_KINDS = new Set([rk.dataset.recokind]);
-    drawReco();
+  // A "next action" or a board row opens its slice in the main pane; an empty
+  // data-focus returns to the overview board.
+  const fb = e.target.closest("[data-focus]");
+  if (fb && RECO) {
+    e.preventDefault();
+    const v = fb.dataset.focus;
+    RECO_FOCUS = !v ? null
+      : v === "trees" ? { t: "trees" }
+      : v === "dups" ? { t: "dups" }
+      : { t: v.split(":")[0], v: v.split(":")[1] };
+    if (TAB !== "recommended") show("recommended");
+    else { window.scrollTo(0, 0); drawReco(); }
     return;
   }
-  const rt = e.target.closest("button[data-recoterr]");
-  if (rt && RECO) {
-    RECO_TERR = new Set([rt.dataset.recoterr]);
-    drawReco();
+
+  const sa = e.target.closest("[data-selact]");
+  if (sa) {
+    e.preventDefault();
+    selAction(sa.dataset.selact);
     return;
   }
 
@@ -1382,13 +1755,13 @@ document.addEventListener("click", e => {
   }
 });
 
-// A tick on a Recommended row posts a decision that persists by path, so it
-// survives rescans and is what Phase 4 will act on.
+// A tick on a Recommended row only stages the mark - the bottom bar's apply
+// commits the whole visible selection as one batch of decisions.
 document.addEventListener("change", e => {
   const mark = e.target.closest("input[data-mark]");
   if (!mark) {
-    // Sidebar filters on the Recommended view.
-    if (!RECO || TAB !== "recommended") return;
+    // Filter boxes inside the Recommended focus view.
+    if (!RECO || TAB !== "recommended" || !RECO.opts) return;
     const box = e.target.closest(
       "input[data-fstate],input[data-fkind],input[data-fterr]");
     if (!box) return;
@@ -1399,14 +1772,11 @@ document.addEventListener("change", e => {
       box.checked);
     return;
   }
-  const choice = mark.checked ? "delete" : "unsure";
-  fetch("/api/decide", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: mark.dataset.mark, choice }),
-  }).then(r => r.json()).then(j => {
-    mark.closest("tr").className = j.ok ? "decided-" + choice : "";
-  });
+  if (!SEL) return;  // no staged slice active - nothing should have a box
+  const p = mark.dataset.mark;
+  if (mark.checked) SEL.add(p); else SEL.delete(p);
+  syncStaged(mark);
+  updateSelBar();
 });
 
 let searchTimer = null;
@@ -1423,6 +1793,6 @@ document.getElementById("search").addEventListener("input", e => {
   try {
     SNAP = await api("/api/snapshot");
     DIR_ID = SNAP.root_id;
-    show("folders");
+    show("recommended");
   } catch (e) { fail(e); }
 })();
