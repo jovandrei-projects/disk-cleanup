@@ -1,7 +1,7 @@
 # Task: Reclaim space - marked decisions become deletions, reversibly
 
 **Status:** in progress
-**Started:** 2026-09-28   **Last touched:** 2026-10-01
+**Started:** 2026-09-28   **Last touched:** 2026-10-01 (late)
 
 ## Objective
 
@@ -165,6 +165,28 @@ call finally has a declared argtypes/restype. Verified live: batch POST
 starts + stores its result, empty-bin POST freed a seeded scratch file
 and reported freed 0 on an empty bin. Self-test + render gate green.
 See AGENTS.md trap 17.
+
+2026-10-01 late: UX-cohesion pass answering user feedback (stale 6 GB bin
+figure, no group checkboxes, unexplained un-tickable rows, dead ends on
+tier-B rows, "empty the bin" jumping to another tab). The Reclaim tab is
+gone; its content is the "Send to the Recycle Bin" pipeline slice inside
+Recommended (focus `{t:"pipeline"}`: step 1 recycle the marks, step 2 empty
+the Bin, live status line, batch history pointer). Every sidebar/board
+action opens a slice in the same tab. Guarded rows moved out of the
+tickable list into a collapsed "Handled elsewhere" group with a per-row
+note of what actually deals with it. Every collapsible group (candidate
+groups, dup sets, dup folders) has a group checkbox; the bare `C:` tree
+root is unwrapped. Backend: after a batch or empty-bin the covering parents
+are queued for `scan.py --refresh` automatically and the store reloads the
+new snapshot when the queue drains - `REFRESH` gained reloading/reloaded/
+error fields and merges paths into a running queue, re-checking after the
+reload. Verified live end-to-end: scratch file recycled, refresh of its
+parent ran, snapshot 6 -> 7 reloaded with `reloaded:true`. Watch out:
+SO_REUSEADDR let a stale pythonw.exe share :8770 and hide the new fields -
+AGENTS.md trap 18. Gates: `node --check`, `py_compile`,
+`reclaim.py --self-test`, `test_render.js` all green (render test's
+"Duplicate files" overview expectation relaxed - dup rows legitimately
+vanish when analysis is stale for the loaded snapshot).
 
 ## Deferred or blocked
 

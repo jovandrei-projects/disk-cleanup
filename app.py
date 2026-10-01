@@ -26,6 +26,7 @@ from urllib.parse import urlparse, parse_qs
 
 import analyze
 import reclaim
+from scan import normpath, win
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
@@ -577,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(paths, list) or not all(
                         isinstance(p, str) for p in paths) or len(paths) > 20:
                     return self.send_json({"error": "bad path list"}, 400)
-                return self.send_json(start_refresh(paths))
+                return self.send_json(start_refresh(s, paths))
             if u.path == "/api/reload":
                 s.reload()
                 return self.send_json({"ok": True, "snapshot": s.sid})
@@ -604,34 +605,84 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # Refreshing a subtree takes about a minute each, so it runs off-thread and
-# the UI polls /api/refresh_status. A refresh appends a new snapshot; the views
-# keep serving the old one until /api/reload re-reads the table.
-REFRESH = {"running": False, "queue": [], "done": [], "started_at": None}
+# the UI polls /api/refresh_status. A refresh appends a new snapshot; the
+# worker reloads the store when the queue drains, so views move to the new
+# snapshot by themselves - no manual "load it" step.
+REFRESH = {"running": False, "reloading": False, "reloaded": False,
+           "error": None, "queue": [], "done": [], "started_at": None}
 
 
-def start_refresh(paths):
+def _refreshable(store, paths):
+    """Drop targets a --refresh would reject or turn into a full rescan: the
+    scan root itself, and gone paths whose nearest scanned ancestor IS the
+    root (cmd_refresh climbs to it; the root refusal only guards the literal
+    argument, so a deleted top-level folder would sneak a full C: walk in)."""
+    root = normpath(store.snap["root"])
+    out = []
+    for p in paths:
+        n = normpath(p)
+        if n == root:
+            continue
+        if not os.path.isdir(win(p)) and normpath(os.path.dirname(p)) == root:
+            continue
+        out.append(p)
+    return out
+
+
+def start_refresh(store, paths):
+    """Queue subtree refreshes; merges into a running queue (skipping paths a
+    queued ancestor already covers) so a batch finishing mid-refresh still
+    gets its folders rescanned."""
+    paths = _refreshable(store, paths)
     if REFRESH["running"]:
-        return {"ok": False, "error": "a refresh is already running"}
-    REFRESH.update(running=True, queue=list(paths), done=[],
-                   started_at=time.time())
-    threading.Thread(target=_refresh_worker, daemon=True).start()
+        for p in paths:
+            np = normpath(p)
+            if any(np == normpath(q) or np.startswith(normpath(q) + "\\")
+                   for q in REFRESH["queue"] + REFRESH["done"]):
+                continue
+            REFRESH["queue"] = [q for q in REFRESH["queue"]
+                                if not normpath(q).startswith(np + "\\")]
+            REFRESH["queue"].append(p)
+        return {"ok": True, "queued": len(REFRESH["queue"])}
+    if not paths:
+        return {"ok": True, "queued": 0}
+    REFRESH.update(running=True, reloading=False, reloaded=False, error=None,
+                   queue=list(paths), done=[], started_at=time.time())
+    threading.Thread(target=_refresh_worker, args=(store,),
+                     daemon=True).start()
     return {"ok": True, "queued": len(paths)}
 
 
-def _refresh_worker():
+def _refresh_worker(store):
     log_path = os.path.join(HERE, "data", "refresh.log")
     try:
-        while REFRESH["queue"]:
-            p = REFRESH["queue"][0]
-            with open(log_path, "ab") as log:
-                log.write(("\n=== %s  %s ===\n" % (
-                    p, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
-                log.flush()
-                subprocess.run(
-                    [sys.executable, os.path.join(HERE, "scan.py"),
-                     "--refresh", p],
-                    cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
-            REFRESH["done"].append(REFRESH["queue"].pop(0))
+        while True:
+            while REFRESH["queue"]:
+                p = REFRESH["queue"][0]
+                with open(log_path, "ab") as log:
+                    log.write(("\n=== %s  %s ===\n" % (
+                        p, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
+                    log.flush()
+                    subprocess.run(
+                        [sys.executable, os.path.join(HERE, "scan.py"),
+                         "--refresh", p],
+                        cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+                REFRESH["done"].append(REFRESH["queue"].pop(0))
+            if REFRESH["done"]:
+                # The views cache whole-table aggregates per snapshot, so the
+                # numbers a delete just changed only move once the store
+                # points at the new snapshot - reload here, not by hand.
+                REFRESH["reloading"] = True
+                try:
+                    store.reload()
+                    REFRESH["reloaded"] = True
+                except Exception as exc:
+                    REFRESH["error"] = "%s: %s" % (type(exc).__name__, exc)
+                finally:
+                    REFRESH["reloading"] = False
+            # Work merged into the queue during the reload still gets done.
+            if not REFRESH["queue"]:
+                break
     finally:
         REFRESH["running"] = False
 
@@ -658,6 +709,12 @@ def start_batch(store):
         try:
             BATCH["result"] = reclaim.run_batch(db, store.sid)
             store._cache.pop("reclaim", None)
+            res = BATCH["result"] or {}
+            # The snapshot still shows the recycled bytes until the covering
+            # parents are rescanned - queue that now rather than making the
+            # user press "update the snapshot" by hand.
+            if res.get("ok") and res.get("parents"):
+                start_refresh(store, res["parents"])
         except Exception as exc:
             BATCH["error"] = "%s: %s" % (type(exc).__name__, exc)
         finally:
@@ -677,6 +734,13 @@ def start_emptybin(store):
         try:
             EMPTYBIN["result"] = reclaim.empty_bin_logged()
             store._cache.pop("reclaim", None)
+            # Same staleness fix as a batch: the bin's size lives in the
+            # snapshot, so rescan the bin root or it keeps reporting the
+            # pre-empty figure until someone rescans by hand.
+            binpath = os.path.splitdrive(store.snap["root"])[0] + \
+                "\\$Recycle.Bin"
+            if os.path.isdir(win(binpath)):
+                start_refresh(store, [binpath])
         except Exception as exc:
             EMPTYBIN["error"] = "%s: %s" % (type(exc).__name__, exc)
         finally:

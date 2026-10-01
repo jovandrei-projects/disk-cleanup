@@ -73,7 +73,6 @@ const view = document.getElementById("view");
 
 const TABS = [
   ["recommended", "Recommended"],
-  ["reclaim", "Reclaim"],
   ["history", "History"],
   ["folders", "Folders"],
   ["types", "File types"],
@@ -463,11 +462,20 @@ function stageTag(decision) {
 // mark on a protected path aborts a whole batch, so it must not be tickable.
 function markBox(path, blocked) {
   if (blocked)
-    return '<span class="tag" title="not batchable: ' +
+    return '<span class="tag" title="' +
       esc(typeof blocked === "string" ? blocked : "protected system area") +
-      '">handled elsewhere</span>';
+      '">can\'t be sent to the Bin</span>';
   return '<input type="checkbox" data-mark="' + esc(path) + '"' +
     (SEL && SEL.has(path) ? " checked" : "") + ">";
+}
+
+// Every collapsible group gets a box that ticks/unticks the whole group.
+// Toggling is handled in the click handler, not change - the click's default
+// would both flip the box and fold the group, so it is cancelled there and
+// the box state is set by hand.
+function grpBox() {
+  return '<input type="checkbox" class="grpbox" ' +
+    'title="select or clear this whole group">';
 }
 
 // A staged tick shows a marker until it is applied; a committed mark shows the
@@ -505,7 +513,7 @@ function nodeLI(child) {
   if (n.item && kids.length === 0)
     return "<li>" + leafRow(n.item, label) + "</li>";
   return '<li><details class="tdir"' + (n.leaves <= 6 ? " open" : "") + ">" +
-    "<summary><span class=\"tdirname\">" + esc(label) + "</span>" +
+    "<summary>" + grpBox() + "<span class=\"tdirname\">" + esc(label) + "</span>" +
     '<span class="tstats">' + n.leaves.toLocaleString() +
       (n.leaves === 1 ? " item" : " items") + " \u2014 " + size(n.bytes) +
     "</span></summary>" +
@@ -515,7 +523,12 @@ function nodeLI(child) {
 
 function treeHTML(items) {
   const root = buildTree(items);
-  return '<ul class="tree">' + sortedKids(root).map(nodeLI).join("") + "</ul>";
+  let top = sortedKids(root);
+  // Nearly every slice's paths share the drive root, and a lone "C:" node is
+  // a dead click between the group and the rows - skip it.
+  if (top.length === 1 && !top[0].item && /^[A-Za-z]:$/.test(top[0].name))
+    top = sortedKids(top[0]);
+  return '<ul class="tree">' + top.map(nodeLI).join("") + "</ul>";
 }
 
 // A duplicate set is a group of paths, not one row: one <details> per set,
@@ -603,7 +616,7 @@ function dupFilesSection(dups, terrSet) {
       const names = phys < s.n
         ? s.n + " names, " + phys + " physical copies \u2014 "
         : s.n + " identical copies \u2014 ";
-      return '<li><details class="tdir"><summary>' +
+      return '<li><details class="tdir"><summary>' + grpBox() +
         '<span class="tdirname">' + names + size(s.bytes_logical) +
           " each</span>" +
         '<span class="tstats">' +
@@ -658,7 +671,7 @@ function dupTreesSection(t) {
       '<span class="tsize">' + size(m.bytes_disk) + "</span>" +
       '<span class="tfiles">' + m.n_files.toLocaleString() + "</span>" +
       '<span class="tage"></span>' + revealBtn(m.path) + "</div>").join("");
-    return '<li><details class="tdir"><summary>' +
+    return '<li><details class="tdir"><summary>' + grpBox() +
       '<span class="tdirname">' + g.n + " copies of the same folder \u2014 " +
         size(g.bytes_disk) + " each " + tag + "</span>" +
       '<span class="tstats">removing all but one frees ' +
@@ -769,12 +782,13 @@ function recoActions(d, td, hist, plan) {
   const acts = [];
   const actionable = plan.entries.filter(e => !e.guard);
   if (actionable.length)
-    acts.push({ t: "Send marked items to the Bin",
-      s: actionable.length + " marked items, " + size(plan.total_disk),
-      tab: "reclaim" });
+    acts.push({ t: "Send marked items to the Recycle Bin",
+      s: actionable.length + " marked, " + size(plan.total_disk) +
+         " - reversible", focus: { t: "pipeline" } });
   if (plan.bin.bytes > 500 * 1024 * 1024)
     acts.push({ t: "Empty the Recycle Bin",
-      s: size(plan.bin.bytes) + " - permanent, frees the space", tab: "reclaim" });
+      s: size(plan.bin.bytes) + " - permanent, frees the space",
+      focus: { t: "pipeline" } });
   const pendingApps = hist.apps.filter(a => !a.done_at);
   if (pendingApps.length)
     acts.push({ t: pendingApps.length + " apps still marked",
@@ -882,10 +896,15 @@ function recoToggle(which, val, on) {
 
 async function renderRecommended() {
   busy();
-  const [d, td, hist, plan, dec] = await Promise.all([
+  const [d, td, hist, plan, dec, rst, bst, ebs] = await Promise.all([
     api("/api/candidates"), api("/api/treedups"),
-    api("/api/history"), api("/api/reclaim"), api("/api/decisions")]);
-  RECO = { d, td, hist, plan, marks: {} };
+    api("/api/history"), api("/api/reclaim"), api("/api/decisions"),
+    api("/api/refresh_status"),
+    // Older servers lack the status endpoints; treat them as idle.
+    api("/api/reclaim_status").catch(() => ({ running: false })),
+    api("/api/emptybin_status").catch(() => ({ running: false }))]);
+  RECO = { d, td, hist, plan, marks: {},
+           st: { refresh: rst, batch: bst, emptybin: ebs } };
   mergeMarks(dec);
   drawReco();
 }
@@ -911,7 +930,8 @@ function drawReco() {
       '<div class="sideblock"><div class="side-h">progress</div>' +
         recoProgress(d, hist, plan) + "</div>" +
     "</aside>" +
-    '<div class="reco-main' + (RECO_FOCUS ? " padbar" : "") + '">' +
+    '<div class="reco-main' +
+      (RECO_FOCUS && RECO_FOCUS.t !== "pipeline" ? " padbar" : "") + '">' +
     (RECO_FOCUS ? focusBody() : overviewBody()) +
     "</div></div>";
 
@@ -921,7 +941,8 @@ function drawReco() {
   const co = document.getElementById("collapseall");
   if (co) co.onclick = () =>
     view.querySelectorAll("details.tdir").forEach(x => x.open = false);
-  if (RECO_FOCUS) updateSelBar();
+  if (RECO_FOCUS && RECO_FOCUS.t === "pipeline") wirePipeline();
+  else if (RECO_FOCUS) updateSelBar();
   // Filter boxes, focus links and bar buttons are wired through the delegated
   // document listeners below (data-fstate / data-focus / data-selact), so a
   // redraw never needs to re-bind.
@@ -965,8 +986,11 @@ function overviewBody() {
     for (const c of items) (kinds[c.kind] = kinds[c.kind] || []).push(c);
     for (const [k, list] of Object.entries(kinds)
         .sort((a, b) => sum(b[1]) - sum(a[1])))
+      // The Bin's own row goes straight to the send/empty step - recycling it
+      // would just move it inside itself, which the guard refuses anyway.
       rows += brow((KIND_META[k] || [k])[0], list.length.toLocaleString(),
-                   sum(list), tally(list), "kind:" + k, true);
+                   sum(list), tally(list),
+                   k === "recycle_bin" ? "pipeline" : "kind:" + k, true);
   }
   if (d.dup_sets.sets && d.dup_sets.sets.length) {
     const groups = {};
@@ -1005,8 +1029,8 @@ function overviewBody() {
   return '<div class="note">Everything the inventory flagged, as units of ' +
     'work. Pick a next step on the left or a row below - each opens a focused ' +
     'list where ticks are staged and applied from the bar at the bottom. ' +
-    'Nothing is deleted here: marks land on the Reclaim tab, which asks ' +
-    'again before anything moves.</div>' +
+    'Nothing is deleted here: marks land on the "Send to the Recycle Bin" ' +
+    'step, which asks again before anything moves.</div>' +
     '<table><thead><tr><th>What needs a look</th><th class="num">items</th>' +
     '<th class="num">on disk</th><th class="num">status</th>' +
     '<th class="num"></th></tr></thead><tbody>' + rows + "</tbody></table>";
@@ -1024,9 +1048,10 @@ function kindGroups(items, flat) {
   for (const c of items) (groups[c.kind] = groups[c.kind] || []).push(c);
   return Object.values(groups)
     .sort((a, b) => sum(b) - sum(a))
-    .map(list => {
+    .map((list, gi) => {
       const meta = KIND_META[list[0].kind] || [list[0].kind, list[0].reason || ""];
-      return '<details class="tdir"><summary>' +
+      return '<details class="tdir"' + (gi === 0 ? " open" : "") + "><summary>" +
+        grpBox() +
         '<span class="tdirname">' + esc(meta[0]) + "</span>" +
         '<span class="tstats">' + list.length.toLocaleString() +
           (list.length === 1 ? " item" : " items") + ", " +
@@ -1042,8 +1067,11 @@ function focusBody() {
   const shownState = c => !RECO_STATES || RECO_STATES.has(c.decision || "none");
   const terrOf = s =>
     [...new Set(s.members.map(m => territoryOf(m.path)))].sort().join("+");
+  // A row is markable when the guard does not refuse it; a refused row that
+  // already carries a decision keeps its box so it can still be unmarked.
+  const markable = c => !c.guard || !!c.decision;
 
-  let title = "", sub = "", slice = [],
+  let title = "", sub = "", slice = [], elsewhere = [],
       wantStates = false, wantKinds = false, wantTerrs = false;
   const build = () => {
     if (f.t === "tier" || f.t === "kind") {
@@ -1054,18 +1082,20 @@ function focusBody() {
       const meta = f.t === "kind" ? (KIND_META[f.v] || [f.v, ""])
         : f.v === "A"
           ? ["Safe to remove",
-             "Empty, regenerable or already deleted once. Unguarded rows " +
-             "come pre-ticked as a draft - expand a group to exclude what " +
-             "you want kept, then apply on the bar below."]
+             "Empty, regenerable or already deleted once. Rows come " +
+             "pre-ticked as a draft - the group boxes exclude what you want " +
+             "kept, then apply on the bar below."]
           : ["Decide",
              "Big, dormant or redundant - the tool can put the number in " +
              "front of you but only you know if you still want it. Tick " +
              "what goes; marks are staged until you apply them."];
       title = meta[0]; sub = meta[1];
-      slice = items.map(c => ({ p: c.path, b: c.bytes_disk, dec: c.decision,
-        blocked: !!(c.guard && !c.decision), tier: c.tier }));
+      const act = items.filter(markable);
+      elsewhere = items.filter(c => !markable(c));
+      slice = act.map(c => ({ p: c.path, b: c.bytes_disk, dec: c.decision,
+        tier: c.tier }));
       wantStates = true; wantKinds = f.t === "tier";
-      return kindGroups(items, f.t === "kind");
+      return kindGroups(act, f.t === "kind") + elsewhereSection(elsewhere);
     }
     if (f.t === "dups") {
       const terrSet = f.v ? new Set([f.v]) : RECO_TERR;
@@ -1094,18 +1124,31 @@ function focusBody() {
                        blocked: !!(m.protected && !m.decision) });
       return dupTreesSection(td);
     }
+    if (f.t === "pipeline") {
+      title = "Send to the Recycle Bin";
+      sub = "The last two steps, in order. Step 1 moves every marked row to " +
+            "the Bin - reversible, and each batch is logged so it can be put " +
+            "back. Step 2 empties the Bin - permanent, and the only step " +
+            "that actually frees the space. Afterwards the folders that " +
+            "changed are rescanned and the snapshot reloads itself, so the " +
+            "numbers everywhere update within about a minute. No rescan is " +
+            "scheduled otherwise: a full walk stays manual (python scan.py).";
+      slice = [];
+      return pipelineBody();
+    }
     return null;
   };
 
   // The slice's markable paths are known before the content is rendered,
   // because SEL decides the checked state of every box inside it. preSlice
-  // ignores the display filters so staged ticks survive a narrowed view.
+  // ignores the display filters so staged ticks survive a narrowed view, and
+  // guard-refused rows are left out - they get no box to tick.
   const preSlice = [];
   if (f.t === "tier" || f.t === "kind")
     for (const c of d.items)
-      if ((f.t === "kind" ? c.kind === f.v : c.tier === f.v))
+      if ((f.t === "kind" ? c.kind === f.v : c.tier === f.v) && markable(c))
         preSlice.push({ p: c.path, b: c.bytes_disk, dec: c.decision,
-                        blocked: !!(c.guard && !c.decision), tier: c.tier });
+                        tier: c.tier });
   else if (f.t === "dups") {
     const tset = f.v ? new Set([f.v]) : null;
     for (const s of d.dup_sets.sets || []) {
@@ -1123,29 +1166,81 @@ function focusBody() {
   const content = build();
   if (content === null) { RECO_FOCUS = null; return overviewBody(); }
 
-  const guarded = preSlice.filter(r => r.blocked).length;
   const totalBytes = slice.reduce((a, r) => a + r.b, 0);
   const fInner = recoFilters(d, wantStates, wantKinds, wantTerrs);
+  // The pipeline is buttons, not ticks - no staged-selection bar for it.
+  const hasMarks = f.t !== "pipeline";
   return '<div class="focushead">' +
       '<a href="#" data-focus="">&#8249; all recommendations</a>' +
       '<span class="focustitle">' + esc(title) + "</span>" +
-      '<span class="tstats">' + slice.length.toLocaleString() +
-        " rows \u00b7 " + size(totalBytes) + "</span></div>" +
+      (hasMarks
+        ? '<span class="tstats">' + slice.length.toLocaleString() +
+          " rows \u00b7 " + size(totalBytes) + "</span>"
+        : "") +
+      "</div>" +
     '<p class="hint">' + esc(sub) + "</p>" +
-    (guarded
-      ? '<p class="hint">' + guarded.toLocaleString() + " row(s) are tagged " +
-        '"handled elsewhere" - they sit under paths a batch can never touch ' +
-        "(the Bin empties from the Reclaim tab; update staging and error " +
-        "reports are Windows' own tools).</p>"
-      : "") +
     (fInner
       ? '<details class="filt"><summary>narrow this list</summary>' +
         '<div class="filtcols">' + fInner + "</div></details>"
       : "") +
-    '<div class="controls"><button id="expandall">expand all</button>' +
-      '<button id="collapseall">collapse all</button></div>' +
+    (hasMarks
+      ? '<div class="controls"><button id="expandall">expand all</button>' +
+        '<button id="collapseall">collapse all</button></div>'
+      : "") +
     (content || '<p class="hint">Nothing matches those filters.</p>') +
-    '<div class="selbar" id="selbar"></div>';
+    (hasMarks ? '<div class="selbar" id="selbar"></div>' : "");
+}
+
+// Where a guard-refused row actually gets dealt with - "handled elsewhere"
+// only helped if you already knew where elsewhere was.
+function elsewhereNote(c) {
+  const g = c.guard || "";
+  const running = g.match(/^AppData of a running app \((.+)\)$/);
+  if (running)
+    return "in use by " + running[1] + " - close the app and it can be marked";
+  if (c.kind === "recycle_bin")
+    return "already in the Bin - step 2 of 'Send to the Recycle Bin' frees it";
+  if (/^c:\\\$recycle\.bin/i.test(c.path))
+    return "already in the Bin - emptied from 'Send to the Recycle Bin'";
+  if (c.kind === "winupdate")
+    return "Windows' own tools clear this (Disk Cleanup)";
+  if (c.kind === "wer")
+    return "Windows error reporting manages these";
+  if (g === "not on disk") return "already gone - the next rescan drops it";
+  return g || "system area - this tool never touches it";
+}
+
+// Rows the batch can never act on, set apart so every row above has a real
+// checkbox. They are listed for completeness - nothing here wants a manual
+// delete, each row names what handles it.
+function elsewhereSection(items) {
+  if (!items.length) return "";
+  const shown = items.slice(0, 200);
+  const rows = shown.map(c => {
+    const m = age(c.mtime);
+    return '<div class="trow"><span class="tname" title="' + esc(c.path) + '">' +
+      (c.dir_id ? '<a href="#" data-dir="' + c.dir_id + '">' + esc(c.path) + "</a>"
+                : esc(c.path)) +
+      ' <span class="treason">' + esc(elsewhereNote(c)) + "</span></span>" +
+      '<span class="tsize">' + size(c.bytes_disk) + "</span>" +
+      '<span class="tfiles">' +
+        (c.n_files > 1 ? c.n_files.toLocaleString() : "") + "</span>" +
+      '<span class="tage ' + m.cls + '">' + m.text + "</span>" +
+      revealBtn(c.path) + "</div>";
+  }).join("");
+  return '<details class="tdir elsewhere"><summary>' +
+    '<span class="tdirname">Handled elsewhere - can\'t be sent to the Bin</span>' +
+    '<span class="tstats">' + items.length.toLocaleString() + " items \u00b7 " +
+      size(items.reduce((a, c) => a + c.bytes_disk, 0)) + "</span></summary>" +
+    '<p class="hint" style="margin:4px 0 8px">These sit under paths a batch ' +
+    "is not allowed to touch. Nothing here asks you to delete by hand - each " +
+    "row names what actually deals with it.</p>" +
+    rows +
+    (items.length > shown.length
+      ? '<p class="hint" style="margin:4px 0 0">\u2026 and ' +
+        (items.length - shown.length).toLocaleString() + " more.</p>"
+      : "") +
+    "</details>";
 }
 
 // SEL holds the staged selection for the current focus. It resets when the
@@ -1202,9 +1297,19 @@ function updateSelBar() {
       ">" + (diff ? "apply " + diff.toLocaleString() + " mark(s)"
                   : "marks up to date") + "</button>" +
     (marked
-      ? '<a href="#" data-tab="reclaim" class="selreview">' +
+      ? '<a href="#" data-focus="pipeline" class="selreview">' +
         marked.toLocaleString() + " marked \u00b7 " + size(mbytes) +
-        " \u2192 review batch</a>" : "");
+        " \u2192 send to the Recycle Bin</a>" : "");
+  // Group boxes mirror what their rows ended up as: all ticked, none, or
+  // a mix (indeterminate).
+  view.querySelectorAll("input.grpbox").forEach(g => {
+    const det = g.closest("details");
+    const bs = det
+      ? [...det.querySelectorAll("input[data-mark]")] : [];
+    const n = bs.filter(b => b.checked).length;
+    g.checked = bs.length > 0 && n === bs.length;
+    g.indeterminate = n > 0 && n < bs.length;
+  });
 }
 
 function selAction(act) {
@@ -1282,24 +1387,80 @@ async function applyMarks(choice) {
   }
 }
 
-// ------------------------------------------------------------------ reclaim
+// ------------------------------------------------------------------ pipeline
 //
-// Phase 4. The 'delete' marks from Recommended become a batch here: each path
-// is checked against the never-touch list, then moved to the Recycle Bin and
-// logged to a manifest under data/manifests/. Nothing runs from this page
-// loading; the only way anything moves is the button, and even that aborts the
-// whole batch if any mark is refused.
+// The last step of Recommended, where 'delete' marks become deletions: each
+// path is checked against the never-touch list, then moved to the Recycle
+// Bin and logged to a manifest under data/manifests/. Nothing runs from this
+// view loading; the only way anything moves is a button, and a batch that
+// contains a protected path aborts entirely. After anything moves, the
+// server rescans the affected folders and reloads the snapshot on its own -
+// the numbers here (and in the header) update without a manual rescan.
 
 let LAST_BATCH = null;
 
-async function renderReclaim() {
-  busy();
-  const [d, rst, bst, ebs] = await Promise.all([
-    api("/api/reclaim"), api("/api/refresh_status"),
-    // Older servers lack the status endpoints; treat them as idle.
-    api("/api/reclaim_status").catch(() => ({ running: false })),
-    api("/api/emptybin_status").catch(() => ({ running: false }))]);
+// One line describing what the background workers are doing right now.
+// Shown in-place by the poller; the slice only re-renders when a run ends.
+function pipeStatusText() {
+  const st = (RECO && RECO.st) || {};
+  const b = st.batch || {}, r = st.refresh || {}, e = st.emptybin || {};
+  if (b.running)
+    return "Sending marked items to the Bin - a large batch can take " +
+      "minutes. The page stays usable.";
+  if (e.running)
+    return "Emptying the Recycle Bin - a large bin can take a minute or " +
+      "more. The page stays usable.";
+  if (r.running)
+    return "Rescanning the folders that changed: " + r.done.length + " of " +
+      (r.done.length + (r.queue || []).length) +
+      " done - about a minute each.";
+  if (r.reloading) return "Loading the new snapshot...";
+  if (b.error) return "Batch failed: " + b.error;
+  if (e.error) return "Emptying failed: " + e.error;
+  if (r.error) return "Rescan failed: " + r.error;
+  if (r.reloaded) return "Snapshot updated - the numbers shown are current.";
+  return "";
+}
+
+// While a batch, empty or rescan is running, poll its status dict and keep
+// the status line current. When everything settles, pull the (already
+// server-side reloaded) snapshot and rebuild the slice so every number
+// reflects what just happened.
+let PIPE_POLL = null;
+function ensurePipePoll() {
+  if (PIPE_POLL) return;
+  PIPE_POLL = setInterval(async () => {
+    if (!RECO || TAB !== "recommended" ||
+        !RECO_FOCUS || RECO_FOCUS.t !== "pipeline") {
+      clearInterval(PIPE_POLL); PIPE_POLL = null; return;
+    }
+    let b, r, e;
+    try {
+      [b, r, e] = await Promise.all([
+        api("/api/reclaim_status"), api("/api/refresh_status"),
+        api("/api/emptybin_status")]);
+    } catch (e2) { return; }  // a dropped poll is not fatal; try next tick
+    RECO.st = { batch: b, refresh: r, emptybin: e };
+    const el = document.getElementById("pipestatus");
+    if (el) el.innerHTML = pipeStatusText();
+    const active = b.running || e.running || r.running || r.reloading;
+    if (active) return;
+    clearInterval(PIPE_POLL); PIPE_POLL = null;
+    if (b.result && (!LAST_BATCH || LAST_BATCH.batch !== b.result.batch))
+      LAST_BATCH = b.result;
+    if (b.result || e.result || r.reloaded) {
+      SNAP = await api("/api/snapshot");
+      renderHeader();
+      await renderRecommended();
+    }
+  }, 2000);
+}
+
+function pipelineBody() {
+  const d = RECO.plan, st = RECO.st || {};
+  const bst = st.batch || {}, ebs = st.emptybin || {}, rst = st.refresh || {};
   const refused = d.entries.filter(e => e.guard);
+  const anyRunning = bst.running || ebs.running || rst.running || rst.reloading;
 
   const status = e => e.guard
     ? '<span class="tag empty">refused: ' + esc(e.guard) + "</span>"
@@ -1323,164 +1484,95 @@ async function renderReclaim() {
         ' <a href="#" data-unmark="' + esc(e.path) + '">unmark</a></td></tr>';
   }).join("");
 
-  const mrows = d.manifests.map(m => {
-    const label = m.items ? m.ok + "/" + m.items + " recycled" : "bin emptied";
-    return "<tr>" +
-      '<td class="name">' + esc(m.batch) + "</td>" +
-      '<td class="num">' + label + "</td>" +
-      '<td class="num">' + (m.freed == null ? "" : size(m.freed)) + "</td>" +
-      "<td>" + (m.items
-        ? '<a href="#" data-restore="' + esc(m.batch) + '">restore</a>'
-        : '<span class="tag">permanent</span>') + "</td></tr>";
-  }).join("");
-
   const last = LAST_BATCH
-    ? '<h3 style="margin:20px 0 6px;font-size:13px">Last batch: ' +
-      esc(LAST_BATCH.batch || "not run") + "</h3>" +
+    ? '<h3 class="step">Last run: ' + esc(LAST_BATCH.batch || "not run") +
+        "</h3>" +
       '<p class="hint">' + (LAST_BATCH.ok
-        ? "Freed " + size(LAST_BATCH.freed) + ". Manifest: " +
-          esc(LAST_BATCH.manifest) + "."
+        ? (LAST_BATCH.restore
+            ? "Restored."
+            : "Recycled - volume free delta " + size(LAST_BATCH.freed) +
+              " (near zero is expected: the bytes sit in the Bin until " +
+              "step 2).") +
+          " Manifest: " + esc(LAST_BATCH.manifest || "") + "."
         : esc(LAST_BATCH.error || "did not run")) + "</p>" +
       table(["Path", "Result"], LAST_BATCH.results
         ? LAST_BATCH.results.map(r => "<tr><td class=\"name\">" + esc(r.path) +
             "</td><td>" + (r.ok ? (LAST_BATCH.restore ? "restored" : "recycled")
                               : "FAILED: " + esc(r.error)) +
             "</td></tr>").join("")
-        : "") +
-      (LAST_BATCH.ok && LAST_BATCH.parents.length
-        ? '<div class="controls"><button id="refreshnow">update the snapshot ' +
-          "(" + LAST_BATCH.parents.length + " subtree" +
-          (LAST_BATCH.parents.length > 1 ? "s" : "") + ")</button>" +
-          '<span class="path">runs scan.py --refresh on ' +
-          LAST_BATCH.parents.map(esc).join(", ") + "</span></div>"
         : "")
     : "";
 
-  const refreshLine = rst.running
-    ? '<div class="note">Refreshing the snapshot: ' +
-      rst.done.length + " of " + (rst.done.length + rst.queue.length) +
-      " done. Takes about a minute per subtree.</div>"
-    : (rst.done.length
-      ? '<div class="note">Refresh finished. <a href="#" id="reloadsnap">' +
-        "Load the new snapshot</a> to see the freed space here.</div>"
-      : "");
-
-  view.innerHTML =
-    '<div class="note">This is where marks become deletions. Paths marked ' +
-    '<b>delete</b> on the Recommended tab are listed here; pressing the button ' +
-    "sends them to the <b>Recycle Bin</b> and writes a manifest under " +
-    "<code>data/manifests/</code> so the batch can be put back. The " +
-    "never-touch list is enforced before anything moves \u2014 a batch that " +
-    "contains a protected path refuses entirely.</div>" +
-    '<div class="cards">' +
-      card(d.entries.length.toLocaleString(), "marked for deletion") +
+  return '<div class="cards">' +
+      card(d.entries.length.toLocaleString(), "marked for the Bin") +
       card(size(d.total_disk), "would free on disk") +
       card(refused.length.toLocaleString(), "refused by the guard") +
       card(size(d.bin.bytes), "in the Recycle Bin") +
     "</div>" +
-    refreshLine +
-    '<h3 style="margin:8px 0;font-size:13px">Proposed batch</h3>' +
+    '<div class="note" id="pipestatus">' + pipeStatusText() + "</div>" +
+    '<h3 class="step">1 &middot; Send the marked rows to the Bin</h3>' +
     (d.entries.length
       ? table(["Path", "On disk", "Files", "Modified", "Status", ""], erows)
-      : '<p class="hint">Nothing is marked for deletion. Tick candidates on ' +
-        'the <a href="#" data-tab="recommended">Recommended</a> tab first.</p>') +
+      : '<p class="hint">Nothing is marked yet - tick rows in any ' +
+        '<a href="#" data-focus="">recommendation</a> and apply them, and ' +
+        "they show up here.</p>") +
     '<div class="controls">' +
       '<button id="runbatch"' +
-        (d.can_run && !bst.running ? "" : " disabled") +
+        (d.can_run && !anyRunning ? "" : " disabled") +
         ">send to the Recycle Bin</button>" +
       '<span class="path">' +
         (d.can_run
           ? d.actionable + " item" + (d.actionable === 1 ? "" : "s") +
-            ", " + size(d.total_disk)
+            ", " + size(d.total_disk) + " - reversible, logged to a manifest"
           : refused.length
             ? "blocked - unmark the refused rows first"
-            : "nothing to run") +
+            : "nothing marked") +
       "</span></div>" +
-    (bst.running
-      ? '<div class="note">Recycling the marked items - a large batch can ' +
-        "take minutes. The page stays usable.</div>"
-      : bst.error
-        ? '<div class="note">Batch failed: ' + esc(bst.error) + "</div>"
-        : "") +
-    '<h3 style="margin:20px 0 6px;font-size:13px">The Recycle Bin itself</h3>' +
+    '<h3 class="step">2 &middot; Empty the Recycle Bin</h3>' +
     '<div class="controls"><button id="emptybin"' +
-      (d.bin.bytes && !ebs.running ? "" : " disabled") +
+      (d.bin.bytes && !anyRunning ? "" : " disabled") +
       ">empty it permanently</button>" +
       '<span class="path">' + d.bin.files.toLocaleString() + " items, " +
       size(d.bin.bytes) + " at the last scan \u2014 permanent, already " +
-      "deleted once</span></div>" +
-    (ebs.running
-      ? '<div class="note">Emptying the Recycle Bin - a large bin can take ' +
-        "a minute or more. The page stays usable.</div>"
-      : ebs.error
-        ? '<div class="note">Emptying failed: ' + esc(ebs.error) + "</div>"
-        : ebs.result
-          ? '<div class="note">Bin emptied - freed ' + size(ebs.result.freed) +
-            " on the volume. The item count above updates on the next " +
-            "rescan.</div>"
-          : "") +
+      "deleted once. The Bin is rescanned afterwards on its own.</span></div>" +
     last +
-    '<h3 style="margin:20px 0 6px;font-size:13px">Batch history</h3>' +
-    (mrows
-      ? table(["Batch", "Items", "Freed", ""], mrows)
-      : '<p class="hint">No manifests yet.</p>');
+    '<p class="hint" style="margin-top:16px">Past batches - including ' +
+    'restoring one - live on the <a href="#" data-tab="history">History</a> ' +
+    "tab.</p>";
+}
 
+// The buttons exist only while the pipeline slice is open; wire them after
+// each drawReco and (re)start the status poller if work is in flight.
+function wirePipeline() {
   const rb = document.getElementById("runbatch");
   if (rb) rb.onclick = async () => {
-    if (!confirm("Send " + d.actionable + " marked item(s) to the Recycle Bin?"))
+    if (!confirm("Send " + RECO.plan.actionable +
+                 " marked item(s) to the Recycle Bin?"))
       return;
     try {
       await apiPost("/api/reclaim");
-      // The batch runs off the request thread - a big one is minutes of disk
-      // work - so poll for its result the way the snapshot refresh polls.
-      const poll = setInterval(async () => {
-        const s2 = await api("/api/reclaim_status");
-        if (!s2.running) {
-          clearInterval(poll);
-          LAST_BATCH = s2.result || { batch: "", ok: false,
-            error: s2.error || "batch failed", results: null, parents: [] };
-          renderReclaim();
-        }
-      }, 2000);
+      RECO.st.batch = { running: true };
+      drawReco();
+      ensurePipePoll();
     } catch (e2) {
-      LAST_BATCH = { batch: "", ok: false, error: e2.message,
-                     results: null, parents: [] };
+      alert("batch did not start: " + e2.message);
     }
-    renderReclaim();
   };
   const eb = document.getElementById("emptybin");
   if (eb) eb.onclick = async () => {
     if (!confirm("Empty the Recycle Bin? This is permanent.")) return;
     try {
       await apiPost("/api/emptybin");
-      const poll = setInterval(async () => {
-        const s2 = await api("/api/emptybin_status");
-        if (!s2.running) { clearInterval(poll); renderReclaim(); }
-      }, 2000);
+      RECO.st.emptybin = { running: true };
+      drawReco();
+      ensurePipePoll();
     } catch (e2) {
       alert("empty did not start: " + e2.message);
     }
-    renderReclaim();
   };
-  const rf = document.getElementById("refreshnow");
-  if (rf) rf.onclick = async () => {
-    await apiPost("/api/refresh", { paths: LAST_BATCH.parents });
-    // Poll until the background refresh finishes, then offer the reload.
-    const poll = setInterval(async () => {
-      const s = await api("/api/refresh_status");
-      if (!s.running) { clearInterval(poll); renderReclaim(); }
-    }, 3000);
-    renderReclaim();
-  };
-  const rl = document.getElementById("reloadsnap");
-  if (rl) rl.onclick = async () => {
-    rl.textContent = "reloading...";
-    await apiPost("/api/reload");
-    SNAP = await api("/api/snapshot");
-    DIR_ID = SNAP.root_id;
-    renderHeader();
-    renderReclaim();
-  };
+  const st = RECO.st || {};
+  const r = st.refresh || {}, b = st.batch || {}, e = st.emptybin || {};
+  if (b.running || e.running || r.running || r.reloading) ensurePipePoll();
 }
 
 // ------------------------------------------------------------------ history
@@ -1578,7 +1670,8 @@ async function renderHistory() {
       '<td class="num">' + esc(stamp) + "</td>" +
       '<td class="num">' + label + "</td>" +
       '<td class="num">' + (m.freed == null ? "" : size(m.freed)) + "</td>" +
-      "<td>" + (m.items ? '<a href="#" data-tab="reclaim">reclaim tab</a>'
+      "<td>" + (m.items ? '<a href="#" data-restore="' + esc(m.batch) +
+                          '">restore</a>'
                         : '<span class="tag">permanent</span>') + "</td></tr>";
   }).join("");
 
@@ -1689,7 +1782,6 @@ async function renderSearch(term) {
 
 const RENDER = {
   recommended: renderRecommended,
-  reclaim: renderReclaim,
   history: renderHistory,
   folders: renderFolders, types: renderTypes, age: renderAge,
   biggest: renderBiggest, video: renderVideo, empty: renderEmpty,
@@ -1728,6 +1820,27 @@ document.addEventListener("click", e => {
     return;
   }
 
+  // Group box in a collapsible summary. preventDefault stops both the box's
+  // own flip and the <details> fold, so the wanted state is computed and set
+  // by hand: all ticked -> clear the group, otherwise tick all of it.
+  const gb = e.target.closest("input.grpbox");
+  if (gb) {
+    e.preventDefault();
+    if (!SEL) return;
+    const det = gb.closest("details");
+    const boxes = det
+      ? [...det.querySelectorAll("input[data-mark]")] : [];
+    const on = !(boxes.length && boxes.every(b => b.checked));
+    for (const b of boxes) {
+      b.checked = on;
+      if (on) SEL.add(b.dataset.mark); else SEL.delete(b.dataset.mark);
+      syncStaged(b);
+    }
+    gb.checked = on;
+    updateSelBar();
+    return;
+  }
+
   const dir = e.target.closest("[data-dir]");
   if (dir) {
     e.preventDefault();
@@ -1757,7 +1870,7 @@ document.addEventListener("click", e => {
   if (un) {
     e.preventDefault();
     apiPost("/api/decide", { path: un.dataset.unmark, choice: "unsure" })
-      .then(() => renderReclaim());
+      .then(() => TAB === "recommended" ? renderRecommended() : show(TAB));
     return;
   }
 
@@ -1791,7 +1904,9 @@ document.addEventListener("click", e => {
             path: r.path, ok: r.restored, error: r.error || "not restored",
           })),
         };
-        renderReclaim();
+        RECO_FOCUS = { t: "pipeline" };
+        if (TAB !== "recommended") show("recommended");
+        else drawReco();
       });
   }
 });

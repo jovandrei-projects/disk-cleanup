@@ -192,6 +192,12 @@ use `;`.
     own connection (concurrent calls on one conn are not safe). Related:
     `SHEmptyRecycleBinW` answers `E_UNEXPECTED` (0x8000FFFF), not
     `ERROR_FILE_NOT_FOUND`, when the bin is already empty; both are accepted.
+18. **Windows `SO_REUSEADDR` lets a second app.py silently share the port.**
+    Two processes bound :8770 and answers alternated between the live and a
+    stale instance, so a verified change looked unverified (hit 2026-10-01 -
+    an old `pythonw.exe` hid the new status fields). Before trusting any
+    check against the viewer, `netstat -ano | findstr :8770` must show ONE
+    LISTENING line.
 
 ## Running things
 
@@ -231,10 +237,12 @@ python reclaim.py --restore FILE  put back what a manifest recycled
 python reclaim.py --empty-bin --yes   empty the Recycle Bin itself (permanent)
 ```
 
-The viewer's Reclaim tab does the same through `POST /api/reclaim`, then
-`POST /api/refresh` rescanning the covering parents on a background thread and
-`POST /api/reload` loading the new snapshot. The never-touch list is enforced
-in `reclaim.guard_reason`; a batch containing a refused path aborts before
+The viewer's pipeline slice (Recommended → "Send to the Recycle Bin") does
+the same through `POST /api/reclaim`; the covering parents are then
+rescanned automatically (`scan.py --refresh` on the refresh thread) and the
+store reloads the new snapshot itself when the queue drains - no manual
+refresh or reload step. The never-touch list is enforced in
+`reclaim.guard_reason`; a batch containing a refused path aborts before
 touching anything.
 
 Verify a scan before building on it. `--verify` checks the rollup invariant -

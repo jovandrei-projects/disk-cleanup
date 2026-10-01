@@ -232,6 +232,22 @@ details.filt[open] > summary::before { content: "\25BE\00a0 "; }
 /* a ticked-but-not-applied row */
 .trow.staged { box-shadow: inset 2px 0 0 var(--accent); }
 
+/* markable rows get a real, visible checkbox; group boxes sit in summaries */
+.trow input[type="checkbox"], input.grpbox {
+  width: 14px; height: 14px; accent-color: var(--accent);
+  cursor: pointer; margin: 0; flex: none;
+}
+details.tdir > summary > input.grpbox { margin-right: 8px; vertical-align: -2px; }
+
+/* the numbered steps of the pipeline slice */
+h3.step {
+  margin: 20px 0 6px; font-size: 13px; font-weight: 600;
+}
+
+/* rows the batch can never touch, kept apart from the tickable list */
+details.elsewhere > summary .tdirname { color: var(--dim); }
+details.elsewhere .tname { color: var(--dim); }
+
 .stagetable th, .stagetable td { padding: 2px 4px; font-size: 12px; }
 .stagetable td:first-child { color: var(--dim); }
 

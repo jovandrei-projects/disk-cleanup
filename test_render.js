@@ -105,11 +105,11 @@ function assertRendered(name, mustContain) {
         document.getElementById("usagebar").innerHTML.includes("seg-scanned"));
 
   const cases = [
+    // The duplicate board rows only exist while dup analysis matches the
+    // loaded snapshot - a refresh makes it stale and the sidebar instead
+    // asks for a re-run, so they cannot be hard expectations here.
     ["recommended", ["next actions", "progress", "Safe to remove", "Decide",
-                     "Duplicate files", "Duplicate folders", 'data-focus=',
-                     "What needs a look"]],
-    ["reclaim", ["Proposed batch", "Recycle Bin", "never-touch",
-                 "Batch history", "marked for deletion"]],
+                     'data-focus=', "What needs a look"]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
     ["types", ["By extension", "<table", "video"]],
     ["age", ["Last modified", "<table", "cannot be trusted"]],
@@ -138,10 +138,20 @@ function assertRendered(name, mustContain) {
     app.drawReco();
     assertRendered("recommended focus: Decide",
       ["all recommendations", "data-mark=", 'id="selbar"', "Decide"]);
+    app.setFocus({ t: "tier", v: "A" });
+    app.drawReco();
+    assertRendered("recommended focus: Safe to remove",
+      ["all recommendations", "data-mark=", "grpbox",
+       "Handled elsewhere"]);
     app.setFocus({ t: "dups" });
     app.drawReco();
     assertRendered("recommended focus: dups",
       ["Duplicate files", "all but 1st copy"]);
+    app.setFocus({ t: "pipeline" });
+    app.drawReco();
+    assertRendered("recommended focus: pipeline",
+      ["Send to the Recycle Bin", "Empty the Recycle Bin",
+       "id=\"runbatch\"", "id=\"emptybin\"", "id=\"pipestatus\""]);
     app.setFocus(null);
     app.drawReco();
     check("recommended overview returns",
