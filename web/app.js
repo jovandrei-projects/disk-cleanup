@@ -1294,8 +1294,11 @@ let LAST_BATCH = null;
 
 async function renderReclaim() {
   busy();
-  const [d, rst] = await Promise.all([
-    api("/api/reclaim"), api("/api/refresh_status")]);
+  const [d, rst, bst, ebs] = await Promise.all([
+    api("/api/reclaim"), api("/api/refresh_status"),
+    // Older servers lack the status endpoints; treat them as idle.
+    api("/api/reclaim_status").catch(() => ({ running: false })),
+    api("/api/emptybin_status").catch(() => ({ running: false }))]);
   const refused = d.entries.filter(e => e.guard);
 
   const status = e => e.guard
@@ -1382,7 +1385,8 @@ async function renderReclaim() {
       : '<p class="hint">Nothing is marked for deletion. Tick candidates on ' +
         'the <a href="#" data-tab="recommended">Recommended</a> tab first.</p>') +
     '<div class="controls">' +
-      '<button id="runbatch"' + (d.can_run ? "" : " disabled") +
+      '<button id="runbatch"' +
+        (d.can_run && !bst.running ? "" : " disabled") +
         ">send to the Recycle Bin</button>" +
       '<span class="path">' +
         (d.can_run
@@ -1392,11 +1396,29 @@ async function renderReclaim() {
             ? "blocked - unmark the refused rows first"
             : "nothing to run") +
       "</span></div>" +
+    (bst.running
+      ? '<div class="note">Recycling the marked items - a large batch can ' +
+        "take minutes. The page stays usable.</div>"
+      : bst.error
+        ? '<div class="note">Batch failed: ' + esc(bst.error) + "</div>"
+        : "") +
     '<h3 style="margin:20px 0 6px;font-size:13px">The Recycle Bin itself</h3>' +
     '<div class="controls"><button id="emptybin"' +
-      (d.bin.bytes ? "" : " disabled") + ">empty it permanently</button>" +
+      (d.bin.bytes && !ebs.running ? "" : " disabled") +
+      ">empty it permanently</button>" +
       '<span class="path">' + d.bin.files.toLocaleString() + " items, " +
-      size(d.bin.bytes) + " \u2014 permanent, already deleted once</span></div>" +
+      size(d.bin.bytes) + " at the last scan \u2014 permanent, already " +
+      "deleted once</span></div>" +
+    (ebs.running
+      ? '<div class="note">Emptying the Recycle Bin - a large bin can take ' +
+        "a minute or more. The page stays usable.</div>"
+      : ebs.error
+        ? '<div class="note">Emptying failed: ' + esc(ebs.error) + "</div>"
+        : ebs.result
+          ? '<div class="note">Bin emptied - freed ' + size(ebs.result.freed) +
+            " on the volume. The item count above updates on the next " +
+            "rescan.</div>"
+          : "") +
     last +
     '<h3 style="margin:20px 0 6px;font-size:13px">Batch history</h3>' +
     (mrows
@@ -1408,7 +1430,18 @@ async function renderReclaim() {
     if (!confirm("Send " + d.actionable + " marked item(s) to the Recycle Bin?"))
       return;
     try {
-      LAST_BATCH = await apiPost("/api/reclaim");
+      await apiPost("/api/reclaim");
+      // The batch runs off the request thread - a big one is minutes of disk
+      // work - so poll for its result the way the snapshot refresh polls.
+      const poll = setInterval(async () => {
+        const s2 = await api("/api/reclaim_status");
+        if (!s2.running) {
+          clearInterval(poll);
+          LAST_BATCH = s2.result || { batch: "", ok: false,
+            error: s2.error || "batch failed", results: null, parents: [] };
+          renderReclaim();
+        }
+      }, 2000);
     } catch (e2) {
       LAST_BATCH = { batch: "", ok: false, error: e2.message,
                      results: null, parents: [] };
@@ -1418,7 +1451,15 @@ async function renderReclaim() {
   const eb = document.getElementById("emptybin");
   if (eb) eb.onclick = async () => {
     if (!confirm("Empty the Recycle Bin? This is permanent.")) return;
-    await apiPost("/api/emptybin");
+    try {
+      await apiPost("/api/emptybin");
+      const poll = setInterval(async () => {
+        const s2 = await api("/api/emptybin_status");
+        if (!s2.running) { clearInterval(poll); renderReclaim(); }
+      }, 2000);
+    } catch (e2) {
+      alert("empty did not start: " + e2.message);
+    }
     renderReclaim();
   };
   const rf = document.getElementById("refreshnow");

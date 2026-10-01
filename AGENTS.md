@@ -180,6 +180,18 @@ use `;`.
     copy-nothing degenerate case and aborted mid-write; it now refuses early
     with a clear message. To refresh everything, run a full `python scan.py` -
     that is what a root refresh would be anyway.
+17. **A synchronous disk operation on the request thread looks like a
+    crash.** The viewer is a single-threaded `HTTPServer`; a minute spent
+    inside `SHEmptyRecycleBinW` (or a multi-GB `SHFileOperationW` batch)
+    fills the listen backlog, Windows refuses the overflow, and the page
+    floods with `ERR_CONNECTION_REFUSED` while the process keeps running.
+    `/api/reclaim` and `/api/emptybin` therefore run on daemon threads -
+    `BATCH`/`EMPTYBIN` status dicts polled via `/api/reclaim_status` and
+    `/api/emptybin_status`, same shape as `REFRESH`. Any new long operation
+    belongs on a thread, and a worker that writes `decisions` must open its
+    own connection (concurrent calls on one conn are not safe). Related:
+    `SHEmptyRecycleBinW` answers `E_UNEXPECTED` (0x8000FFFF), not
+    `ERROR_FILE_NOT_FOUND`, when the bin is already empty; both are accepted.
 
 ## Running things
 

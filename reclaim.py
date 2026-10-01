@@ -166,6 +166,9 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
 _sh32 = ctypes.WinDLL("shell32", use_last_error=True)
 _sh32.SHFileOperationW.argtypes = [ctypes.POINTER(SHFILEOPSTRUCTW)]
 _sh32.SHFileOperationW.restype = ctypes.c_int
+_sh32.SHEmptyRecycleBinW.argtypes = [
+    wintypes.HWND, wintypes.LPCWSTR, wintypes.UINT]
+_sh32.SHEmptyRecycleBinW.restype = wintypes.LONG
 _com_ready = False
 
 
@@ -265,9 +268,12 @@ def restore_pair(path, ipath, rpath, attrs=None):
 
 def empty_bin(drive="C:\\"):
     """Empty the Recycle Bin. Permanent - the Bin cannot go into the Bin."""
-    hr = _sh32.SHEmptyRecycleBinW(None, wintypes.LPCWSTR(drive),
+    hr = _sh32.SHEmptyRecycleBinW(None, drive,
                                   0x1 | 0x2 | 0x4)  # no confirm/progress/sound
-    if hr not in (0, 0x80070002):  # S_OK, or already empty
+    # An already-empty bin is not a failure, but which code says so is
+    # version-dependent: ERROR_FILE_NOT_FOUND on some builds, E_UNEXPECTED
+    # (the generic "catastrophic failure") on this one.
+    if hr & 0xFFFFFFFF not in (0, 0x80070002, 0x8000FFFF):
         raise OSError(hr, "SHEmptyRecycleBinW failed")
 
 

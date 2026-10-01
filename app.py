@@ -522,6 +522,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(s.proposed_batch())
             if u.path == "/api/refresh_status":
                 return self.send_json(REFRESH)
+            if u.path == "/api/reclaim_status":
+                return self.send_json(BATCH)
+            if u.path == "/api/emptybin_status":
+                return self.send_json(EMPTYBIN)
             if u.path == "/api/reveal":
                 return self.send_json(reveal(qs.get("path", "")))
             self.send_error(404)
@@ -556,9 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                 s.decide(path, choice)
                 return self.send_json({"ok": True})
             if u.path == "/api/reclaim":
-                out = reclaim.run_batch(s.conn, s.sid)
-                s._cache.pop("reclaim", None)
-                return self.send_json(out)
+                return self.send_json(start_batch(s))
             if u.path == "/api/restore":
                 batch = body.get("batch") or ""
                 if not re.fullmatch(r"batch-[\d-]+", batch):
@@ -569,9 +571,7 @@ class Handler(BaseHTTPRequestHandler):
                 s._cache.pop("reclaim", None)
                 return self.send_json({"results": reclaim.restore_manifest(mpath)})
             if u.path == "/api/emptybin":
-                out = reclaim.empty_bin_logged()
-                s._cache.pop("reclaim", None)
-                return self.send_json(out)
+                return self.send_json(start_emptybin(s))
             if u.path == "/api/refresh":
                 paths = body.get("paths") or []
                 if not isinstance(paths, list) or not all(
@@ -634,6 +634,56 @@ def _refresh_worker():
             REFRESH["done"].append(REFRESH["queue"].pop(0))
     finally:
         REFRESH["running"] = False
+
+
+# The same goes for reclaim: a batch of SHFileOperation calls or a
+# SHEmptyRecycleBinW over a full bin is minutes of synchronous disk work.
+# On the request thread it stalls the single-threaded server until the
+# listen backlog overflows and the page sees ECONNREFUSED - indistinguishable
+# from a crash. Both run on daemon threads; the page polls the status dicts.
+# The batch worker opens its own connection: check_same_thread=False permits
+# sharing but concurrent calls on one connection are not safe, and WAL lets
+# a writer and the reader coexist anyway.
+BATCH = {"running": False, "result": None, "error": None}
+EMPTYBIN = {"running": False, "result": None, "error": None}
+
+
+def start_batch(store):
+    if BATCH["running"]:
+        return {"ok": False, "error": "a batch is already running"}
+    BATCH.update(running=True, result=None, error=None)
+
+    def work():
+        db = sqlite3.connect(store.path)
+        try:
+            BATCH["result"] = reclaim.run_batch(db, store.sid)
+            store._cache.pop("reclaim", None)
+        except Exception as exc:
+            BATCH["error"] = "%s: %s" % (type(exc).__name__, exc)
+        finally:
+            db.close()
+            BATCH["running"] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+def start_emptybin(store):
+    if EMPTYBIN["running"]:
+        return {"ok": False, "error": "the bin is already being emptied"}
+    EMPTYBIN.update(running=True, result=None, error=None)
+
+    def work():
+        try:
+            EMPTYBIN["result"] = reclaim.empty_bin_logged()
+            store._cache.pop("reclaim", None)
+        except Exception as exc:
+            EMPTYBIN["error"] = "%s: %s" % (type(exc).__name__, exc)
+        finally:
+            EMPTYBIN["running"] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 def reveal(path):

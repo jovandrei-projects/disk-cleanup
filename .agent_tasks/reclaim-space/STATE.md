@@ -1,7 +1,7 @@
 # Task: Reclaim space - marked decisions become deletions, reversibly
 
 **Status:** in progress
-**Started:** 2026-09-28   **Last touched:** 2026-09-30
+**Started:** 2026-09-28   **Last touched:** 2026-10-01
 
 ## Objective
 
@@ -148,6 +148,23 @@ marked and would then abort every batch. Sidebar filters collapsed into a
 "narrow this list" block inside the focused view. Also fixed: HTTP listen
 backlog 5 -> 64 (`Server.request_queue_size`), the cause of intermittent
 ECONNREFUSED when the page bursts parallel requests. Render gate green.
+
+2026-10-01: user reported the app "crashed" on confirming empty-bin. It
+did not - SHEmptyRecycleBinW ran synchronously on the request thread of
+the single-threaded server; ~115k bin entries held it long enough that
+the listen backlog overflowed and the page saw a wall of ECONNREFUSED.
+The empty itself succeeded (manifest batch-20261001-003742, freed
+6.28 GB) and the same process was still serving afterwards. Fix:
+`/api/reclaim` and `/api/emptybin` now run on daemon threads
+(`BATCH`/`EMPTYBIN` status dicts, polled via `/api/reclaim_status` and
+`/api/emptybin_status`, same shape as `REFRESH`); the batch worker opens
+its own sqlite connection instead of sharing the request thread's.
+Adjacent find: SHEmptyRecycleBinW answers E_UNEXPECTED (0x8000FFFF), not
+ERROR_FILE_NOT_FOUND, on an already-empty bin - now accepted, and the
+call finally has a declared argtypes/restype. Verified live: batch POST
+starts + stores its result, empty-bin POST freed a seeded scratch file
+and reported freed 0 on an empty bin. Self-test + render gate green.
+See AGENTS.md trap 17.
 
 ## Deferred or blocked
 
