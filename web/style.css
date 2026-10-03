@@ -62,6 +62,30 @@ nav button.on {
   margin-bottom: -1px;
 }
 
+/* second-level pills inside the Stats tab */
+nav.subnav { margin-top: 4px; }
+nav.subnav button {
+  background: transparent; border: 1px solid transparent;
+  color: var(--dim); padding: 3px 10px; cursor: pointer; font: inherit;
+  font-size: 12px; border-radius: 4px;
+}
+nav.subnav button:hover { color: var(--text); }
+nav.subnav button.on {
+  background: #22262e; border-color: var(--line); color: var(--text);
+}
+
+.viewtitle { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+
+/* a candidate group (a kind, a dup territory, "handled elsewhere") is a
+   panel: sibling groups must read as siblings, not as children of the
+   group's folder rows */
+details.kind {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 5px; padding: 6px 10px; margin: 0 0 10px;
+}
+details.kind > summary .tdirname { font-weight: 600; }
+details.kind > ul.tree { margin-top: 6px; }
+
 main { padding: 16px; }
 .hint { color: var(--dim); margin: 0 0 12px; max-width: 78ch; }
 

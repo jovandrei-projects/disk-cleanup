@@ -198,6 +198,14 @@ use `;`.
     an old `pythonw.exe` hid the new status fields). Before trusting any
     check against the viewer, `netstat -ano | findstr :8770` must show ONE
     LISTENING line.
+19. **A long write transaction anywhere locks out the viewer's marks.**
+    `analyze.py --dupes` once opened its write transaction with the DELETE
+    and held it through the whole hashing phase, so for minutes every
+    `POST /api/decide` failed `database is locked` - found when the reclaim
+    self-test crashed on it. Expensive phases must stay outside write
+    transactions: cache inserts commit in chunks, and the result swap
+    (delete + insert) is one short transaction at the end. The same rule
+    holds for any future long analysis pass that shares the database.
 
 ## Running things
 

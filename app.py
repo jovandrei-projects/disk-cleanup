@@ -353,13 +353,19 @@ class Store:
 
     def decide_many(self, pairs):
         """Commit many (path, choice) decisions in one transaction - the
-        Recommended view's staged selection applies a whole slice at once."""
+        Recommended view's staged selection applies a whole slice at once.
+        A "none" choice deletes the row: the path goes back to unmarked."""
         now = time.time()
-        self.conn.executemany(
-            "INSERT INTO decisions (path, choice, decided_at) VALUES (?,?,?)"
-            " ON CONFLICT(path) DO UPDATE SET choice=excluded.choice,"
-            " decided_at=excluded.decided_at",
-            [(p, c, now) for p, c in pairs])
+        writes = [(p, c, now) for p, c in pairs if c != "none"]
+        clears = [(p,) for p, c in pairs if c == "none"]
+        if writes:
+            self.conn.executemany(
+                "INSERT INTO decisions (path, choice, decided_at) VALUES (?,?,?)"
+                " ON CONFLICT(path) DO UPDATE SET choice=excluded.choice,"
+                " decided_at=excluded.decided_at", writes)
+        if clears:
+            self.conn.executemany(
+                "DELETE FROM decisions WHERE path=?", clears)
         self.conn.commit()
         self._cache.pop("candidates", None)
         self._cache.pop("reclaim", None)
@@ -545,6 +551,8 @@ class Handler(BaseHTTPRequestHandler):
                 if out["running"]:
                     out["line"] = read_progress(RESCAN_PROG)
                 return self.send_json(out)
+            if u.path == "/api/dupscan_status":
+                return self.send_json(DUPSCAN)
             if u.path == "/api/oplog":
                 return self.send_json({"lines": list(OPLOG)})
             if u.path == "/api/reveal":
@@ -560,7 +568,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
             s = self.store
             if u.path == "/api/decide":
-                CHOICES = ("keep", "delete", "archive", "unsure")
+                # "none" is the unmark: it removes the decision row entirely.
+                CHOICES = ("keep", "delete", "archive", "unsure", "none")
                 decisions = body.get("decisions")
                 if decisions is not None:
                     # Staged selection from the Recommended focus view:
@@ -595,6 +604,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(start_emptybin(s))
             if u.path == "/api/rescan":
                 return self.send_json(start_rescan(s))
+            if u.path == "/api/dupscan":
+                return self.send_json(start_dupscan(s))
             if u.path == "/api/refresh":
                 paths = body.get("paths") or []
                 if not isinstance(paths, list) or not all(
@@ -845,6 +856,51 @@ def fmt_gb(b):
     if b is None:
         return "an unknown amount"
     return "%.2f GB" % (b / 2 ** 30)
+
+
+# `analyze.py --dupes` hashes every same-size file - minutes, the first run
+# especially. Same pattern as the rescan worker: subprocess off-thread, the
+# page polls the status dict, and the aggregate caches are dropped when it
+# lands so the duplicate lists refresh.
+DUPSCAN = {"running": False, "result": None, "error": None,
+           "started_at": None, "done_at": None}
+
+
+def start_dupscan(store):
+    if DUPSCAN["running"]:
+        return {"ok": False, "error": "duplicate analysis is already running"}
+    DUPSCAN.update(running=True, result=None, error=None,
+                   started_at=time.time(), done_at=None)
+    log_path = os.path.join(HERE, "data", "dupscan.log")
+
+    def work():
+        oplog("duplicate analysis started (analyze.py --dupes)")
+        try:
+            with open(log_path, "ab") as log:
+                log.write(("\n=== dupscan %s ===\n"
+                           % time.strftime("%Y-%m-%d %H:%M:%S")).encode("utf-8"))
+                log.flush()
+                rc = subprocess.run(
+                    [sys.executable, os.path.join(HERE, "analyze.py"),
+                     "--dupes"],
+                    cwd=HERE, stdout=log, stderr=subprocess.STDOUT).returncode
+            if rc == 0:
+                store._cache.pop("candidates", None)
+                store._cache.pop("treedups", None)
+                DUPSCAN["result"] = {"ok": True}
+                oplog("duplicate analysis finished - lists refreshed")
+            else:
+                DUPSCAN["error"] = "analyze.py exited %d (data/dupscan.log)" % rc
+                oplog("duplicate analysis failed - %s" % DUPSCAN["error"])
+        except Exception as exc:
+            DUPSCAN["error"] = "%s: %s" % (type(exc).__name__, exc)
+            oplog("duplicate analysis failed - %s" % DUPSCAN["error"])
+        finally:
+            DUPSCAN["running"] = False
+            DUPSCAN["done_at"] = time.time()
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 # A full walk is ~10 minutes of subprocess work; it runs off-thread like the

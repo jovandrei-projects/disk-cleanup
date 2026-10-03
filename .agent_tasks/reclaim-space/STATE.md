@@ -90,12 +90,13 @@ Order set by the user 2026-09-28: bundled removals first, then granular.
 
 ## Where it stopped
 
-See the last session entry (2026-10-01 later) - progress/visibility pass
-landed and was verified live; commit is next. The user's WhatsApp Cache
-mark failed the live batch with Errno 124 (locked by the app?) - it stays
-marked and will be retried/refused on the next run; worth a look next
-session. Open roadmap asks unchanged: installers tier, personal dup split,
-video decision.
+See the last session entry (2026-10-02) - the viewer UX redesign landed,
+was verified live, and the commit is next. Side effect to know: the
+reclaim self-test runs the real pending batch, and the user's WhatsApp
+Cache mark recycled cleanly this time (the Errno 124 was transient) - it
+was restored, so nothing is lost, but the mark was consumed and the user
+would need to re-mark it to try again. Open roadmap asks unchanged:
+installers tier, personal dup split, video decision.
 
 Historical record: Phases 1-2 built and verified 2026-09-28: `reclaim.py`
 (primitive, guard, manifest, CLI), a Reclaim tab in the viewer, and
@@ -236,6 +237,44 @@ console warning about inputs in `<summary>`; no full-rescan action).
   subtree rescans drained and snapshot 11 -> 27 reloaded, which dropped
   the user's stale `rxjs\dist` recommendation. Self-test + render gate
   green.
+
+2026-10-02: viewer redesign answering the third feedback round (sidebar
+duplicating the board, "Dup analysis is stale" a dead button, no way to
+clear a mark, kind groups reading as children of the group above, duplicate
+tick buttons, unexplained step colours, rescan steps glued onto the Bin
+page, nine flat tabs).
+
+- Sidebar is navigation now: Overview / Marked for the Recycle Bin /
+  Marked to keep / Snapshot & rescans, plus the progress table. The board
+  got a title ("What needs a look"), a plain-English intro, an upkeep row
+  when dup analysis is stale, and the pending-apps row.
+- `pipeline` slice split three ways: `bin` (step 1 send / step 2 empty +
+  a colour legend: blue waiting-running, green done, red failed), `rescan`
+  (full rescan with confirm, folder-rescan queue, duplicate analysis card
+  with a working re-run button, snapshot history table, oplog), `kept`
+  (keep/unsure marks with unmark and to-Bin links).
+- "none" is a real decision: `/api/decide` deletes the row, the selbar
+  gained "clear marks on checked", unmark links send "none", and applied
+  keep/clear marks leave the staged SEL so a later apply cannot re-mark
+  them delete.
+- `/api/dupscan` (+ status poll) runs `analyze.py --dupes` off-thread and
+  drops candidates/treedups caches when it lands. Verified live: finished
+  in ~2.7 min with a warm hash cache, computed_for=27, 2,350 sets.
+- Tabs are Recommended / Folders / Stats; Stats is a header pill row over
+  File types, Age, Biggest files, Video, Empty folders, Software, History
+  (`show()` routes the sub-view names, old links keep working).
+- Kind groups / dup territories / "handled elsewhere" are bordered panels
+  (`details.kind`) - sibling groups no longer read as children of the
+  group above. The controls row lost its duplicate tick-all/tick-none.
+- Found via a self-test collision: `analyze.py --dupes` held a write
+  transaction from its first DELETE through the whole hashing phase, so
+  for minutes every `/api/decide` failed `database is locked`. Hashing now
+  happens first, hash-cache inserts commit in chunks, and the set swap is
+  one short transaction at the end; `_prove_trees` commits per member.
+  See AGENTS.md trap 19.
+- Gates: `node --check`, `py_compile`, `reclaim.py --self-test`,
+  `test_render.js` all green; live POST round trips for none-marks and
+  dupscan verified.
 
 ## Deferred or blocked
 

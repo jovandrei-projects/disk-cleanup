@@ -54,6 +54,7 @@ const src = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8");
 // Expose the module-scope bindings so each view can be driven individually.
 const shim = src + "\n;globalThis.__app = { RENDER, renderHeader, renderSearch, " +
   "getSnap: () => SNAP, setSnap: s => { SNAP = s; }, setDir: i => { DIR_ID = i; }, " +
+  "setTab: t => { TAB = t; }, setSub: s => { SUB = s; }, " +
   "drawReco, setFocus: f => { RECO_FOCUS = f; }, api };\n";
 
 vm.runInThisContext(shim, { filename: "web/app.js" });
@@ -107,9 +108,11 @@ function assertRendered(name, mustContain) {
 
   const cases = [
     // The duplicate board rows only exist while dup analysis matches the
-    // loaded snapshot - a refresh makes it stale and the sidebar instead
-    // asks for a re-run, so they cannot be hard expectations here.
-    ["recommended", ["next actions", "progress", "Safe to remove", "Decide",
+    // loaded snapshot - a refresh makes it stale and the board instead
+    // shows an upkeep row, so they cannot be hard expectations here.
+    ["recommended", ["areas", "progress", "Overview",
+                     "Marked for the Recycle Bin", "Marked to keep",
+                     "Snapshot &amp; rescans", "Safe to remove", "Decide",
                      'data-focus=', "What needs a look"]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
     ["types", ["By extension", "<table", "video"]],
@@ -132,34 +135,66 @@ function assertRendered(name, mustContain) {
     }
   }
 
-  // A next action opens its slice in the main pane: tickable rows plus the
-  // staged-selection bar, and a way back to the board.
+  // A sidebar area or a board row opens its slice in the main pane: tickable
+  // rows plus the staged-selection bar for review slices, buttons for the
+  // bin/rescan areas.
   try {
     app.setFocus({ t: "tier", v: "B" });
     app.drawReco();
     assertRendered("recommended focus: Decide",
-      ["all recommendations", "data-mark=", 'id="selbar"', "Decide"]);
+      ["overview", "data-mark=", 'id="selbar"', "Decide"]);
     app.setFocus({ t: "tier", v: "A" });
     app.drawReco();
     assertRendered("recommended focus: Safe to remove",
-      ["all recommendations", "data-mark=", "grpbox",
+      ["overview", "data-mark=", "grpbox",
        "Handled elsewhere"]);
     app.setFocus({ t: "dups" });
     app.drawReco();
     assertRendered("recommended focus: dups",
       ["Duplicate files", "all but 1st copy"]);
-    app.setFocus({ t: "pipeline" });
+    app.setFocus({ t: "bin" });
     app.drawReco();
-    assertRendered("recommended focus: pipeline",
-      ["Send the marked rows to the Bin", "Empty the Recycle Bin",
-       "rescan the whole drive", "id=\"runbatch\"", "id=\"emptybin\"",
-       "id=\"fullscan\"", "id=\"pipestatus\"", "id=\"oplog\"", "stepc"]);
+    assertRendered("recommended focus: bin",
+      ["Send the marked items to the Bin", "Empty the Recycle Bin",
+       "id=\"runbatch\"", "id=\"emptybin\"",
+       "id=\"pipestatus\"", "id=\"oplog\"", "stepc"]);
+    app.setFocus({ t: "rescan" });
+    app.drawReco();
+    assertRendered("recommended focus: rescan",
+      ["Rescan the whole drive", "id=\"fullscan\"", "Folder rescans",
+       "Duplicate analysis", "id=\"dupscan\"", "Snapshot history"]);
+    app.setFocus({ t: "kept" });
+    app.drawReco();
+    assertRendered("recommended focus: kept",
+      ["Keep</h3>", "Unsure</h3>"]);
     app.setFocus(null);
     app.drawReco();
     check("recommended overview returns",
           view.innerHTML.includes("What needs a look"));
   } catch (e) {
     check("recommended focus", false, e.stack.split("\n").slice(0, 2).join(" | "));
+  }
+
+  // Stats is a parent tab: the pill row lives in the header and the tab
+  // renders whichever sub-view is selected.
+  try {
+    app.setTab("stats"); app.setSub("video");
+    app.renderHeader();
+    const sub = document.getElementById("subtabs").innerHTML;
+    check("stats subnav drawn",
+          sub.includes("File types") && sub.includes("Video") &&
+          sub.includes("History"), sub.slice(0, 160));
+    check("stats subnav marks current", sub.includes('class="on">Video'));
+    view.innerHTML = "";
+    await app.RENDER.stats();
+    assertRendered("view: stats sub-view (video)",
+      ["Folders holding local video"]);
+    app.setTab("recommended");
+    app.renderHeader();
+    check("subnav hidden off Stats",
+          document.getElementById("subtabs").innerHTML === "");
+  } catch (e) {
+    check("stats tab", false, e.stack.split("\n").slice(0, 2).join(" | "));
   }
 
   view.innerHTML = "";

@@ -73,15 +73,23 @@ const view = document.getElementById("view");
 
 const TABS = [
   ["recommended", "Recommended"],
-  ["history", "History"],
   ["folders", "Folders"],
+  ["stats", "Stats"],
+];
+
+// The read-only measurements live one level down under Stats: a pill row in
+// the header picks between them, so the top nav stays three items.
+const STAT_VIEWS = [
   ["types", "File types"],
   ["age", "Age"],
   ["biggest", "Biggest files"],
   ["video", "Video"],
   ["empty", "Empty folders"],
   ["software", "Software"],
+  ["history", "History"],
 ];
+const STAT_NAMES = new Set(STAT_VIEWS.map(v => v[0]));
+let SUB = "types";
 
 function busy() { view.innerHTML = '<div class="loading">loading...</div>'; }
 
@@ -134,6 +142,13 @@ function renderHeader() {
   nav.innerHTML = TABS.map(t =>
     '<button data-tab="' + t[0] + '"' + (t[0] === TAB ? ' class="on"' : "") + ">" +
     t[1] + "</button>").join("");
+
+  const sub = document.getElementById("subtabs");
+  sub.innerHTML = TAB === "stats"
+    ? STAT_VIEWS.map(t =>
+        '<button data-tab="' + t[0] + '"' +
+        (t[0] === SUB ? ' class="on"' : "") + ">" + t[1] + "</button>").join("")
+    : "";
 }
 
 // ------------------------------------------------------------------- folders
@@ -657,7 +672,8 @@ function dupFilesSection(dups, terrSet) {
         s.members.map((m, i) => dupMemberRow(m, i === 0)).join("") +
         "</details></li>";
     }).join("");
-    return '<details class="tdir"' + (k === "personal" ? " open" : "") + '><summary>' +
+    return '<details class="tdir kind"' + (k === "personal" ? " open" : "") +
+      '><summary>' +
       '<span class="tdirname">' + meta[0] + "</span>" +
       '<span class="tstats">' + list.length.toLocaleString() + " sets, " +
         size(rec) + " reclaimable</span></summary>" +
@@ -672,8 +688,8 @@ function dupFilesSection(dups, terrSet) {
         .reduce((a, k) => a + groups[k].length, 0) : 0;
   return head + " - " + dups.sets.length + " proven sets</h3>" +
     (stale ? '<p class="hint" style="margin:0 0 8px">Computed against snapshot ' +
-      dups.computed_for + " \u2014 re-run <code>python analyze.py --dupes</code> " +
-      "to refresh.</p>" : "") +
+      dups.computed_for + ' \u2014 <a href="#" data-focus="rescan">re-run ' +
+      "the analysis from Snapshot & rescans</a> to refresh.</p>" : "") +
     '<p class="hint" style="margin:0 0 8px">Every copy in a set is ' +
     "byte-identical (SHA-256). Sets are split by where the copies live - " +
     "only <b>personal</b> sets are yours to prune; tick the copies you " +
@@ -745,7 +761,7 @@ const KIND_META = {
   stale_large:  ["Large files untouched 2+ years",
     "Big files not modified in a long time. For each one: is it " +
     "re-downloadable or backed up elsewhere? Tick what goes - nothing " +
-    "moves until you send the batch from 'Send to the Recycle Bin'."],
+    "moves until you send the batch from 'Marked for the Recycle Bin'."],
   installer:    ["Installers & disc images",
     "Setup files already run - the installed app does not need them."],
   archive:      ["Large archives",
@@ -811,70 +827,41 @@ function recoProgress(d, hist, plan) {
 
 function focusAttr(f) { return f ? f.t + (f.v ? ":" + f.v : "") : ""; }
 
-// Computed "what now" - the sidebar's whole job. Pipeline steps link to the
-// tab that runs them; review slices open a focused view in the main pane.
-function recoActions(d, td, hist, plan) {
-  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
-  const acts = [];
-  const actionable = plan.entries.filter(e => !e.guard);
-  if (actionable.length)
-    acts.push({ t: "Send marked items to the Recycle Bin",
-      s: actionable.length + " marked, " + size(plan.total_disk) +
-         " - reversible", focus: { t: "pipeline" } });
-  if (plan.bin.bytes > 500 * 1024 * 1024)
-    acts.push({ t: "Empty the Recycle Bin",
-      s: size(plan.bin.bytes) + " - permanent, frees the space",
-      focus: { t: "pipeline" } });
-  const pendingApps = hist.apps.filter(a => !a.done_at);
-  if (pendingApps.length)
-    acts.push({ t: pendingApps.length + " apps still marked",
-      s: size(pendingApps.reduce((a, x) => a + (x.bytes || 0), 0)) +
-         " - uninstallers are Windows' job", tab: "history" });
-  const A = d.items.filter(c => c.tier === "A");
-  if (A.length)
-    acts.push({ t: "Safe to remove", focus: { t: "tier", v: "A" },
-      s: A.length.toLocaleString() + " items, " + size(sum(A)) });
-  const B = d.items.filter(c => c.tier === "B");
-  if (B.length)
-    acts.push({ t: "Decide", focus: { t: "tier", v: "B" },
-      s: B.length.toLocaleString() + " candidates, " + size(sum(B)) });
-  const personalDups = d.dup_sets.sets ? d.dup_sets.sets.filter(s =>
-      s.members.every(m => territoryOf(m.path) === "personal")) : [];
-  if (personalDups.length) {
-    const rec = personalDups.reduce((a, s) =>
-      a + Math.max(0, new Set(s.members.map(m => m.ino)).size - 1) *
-        s.bytes_logical, 0);
-    acts.push({ t: "Pick keepers in personal duplicates",
-      s: personalDups.length.toLocaleString() + " sets, ~" + size(rec) +
-         " reclaimable", focus: { t: "dups", v: "personal" } });
-  }
-  if (td.groups && td.groups.length)
-    acts.push({ t: "Duplicate folders",
-      s: td.groups.length.toLocaleString() + " groups",
-      focus: { t: "trees" } });
-  acts.push({ t: "Rescan the whole drive",
-    s: "snapshot " + SNAP.id + " taken " +
-       new Date(SNAP.started_at * 1000).toLocaleString() +
-       " - a fresh walk is ~10 min",
-    focus: { t: "pipeline" } });
-  if (!d.dup_sets.computed_for || d.dup_sets.computed_for !== SNAP.id)
-    acts.push({ t: "Dup analysis is stale",
-      s: "run python analyze.py --dupes against snapshot " + SNAP.id });
-  if (!acts.length)
-    acts.push({ t: "Nothing pending",
-      s: "the pipeline is empty - rescan or review a tier" });
+// The sidebar is navigation to the areas of the app - not a second copy of
+// the board, which already lists the review work itself.
+function recoNav(d, td, hist, plan) {
   const cur = focusAttr(RECO_FOCUS);
-  const btns = [];
-  if (RECO_FOCUS)
-    btns.push('<button class="nxbtn" data-focus=""><b>&#8249; overview</b>' +
-      "<span>back to the board</span></button>");
-  for (const a of acts)
-    btns.push('<button class="nxbtn' +
-        (a.focus && focusAttr(a.focus) === cur ? " on" : "") + '"' +
-        (a.tab ? ' data-tab="' + a.tab + '"' : "") +
-        (a.focus ? ' data-focus="' + focusAttr(a.focus) + '"' : "") + ">" +
-      "<b>" + esc(a.t) + "</b><span>" + esc(a.s) + "</span></button>");
-  return btns.join("");
+  const btn = (focus, label, sub) =>
+    '<button class="nxbtn' + (focus === cur ? " on" : "") +
+    '" data-focus="' + focus + '"><b>' + esc(label) + "</b><span>" +
+    esc(sub) + "</span></button>";
+  let nKeep = 0, nUnsure = 0;
+  for (const c of Object.values(RECO.marks || {})) {
+    if (c === "keep") nKeep++;
+    else if (c === "unsure") nUnsure++;
+  }
+  const dupFor = d.dup_sets.computed_for;
+  return [
+    btn("", "Overview",
+      "everything the scan flagged, in one board"),
+    btn("bin", "Marked for the Recycle Bin",
+      (plan.entries.length
+        ? plan.entries.length.toLocaleString() + " marked \u00b7 " +
+          size(plan.total_disk) +
+          " \u00b7 the Bin holds " + size(plan.bin.bytes)
+        : "nothing marked yet") +
+      " - review, send, empty"),
+    btn("kept", "Marked to keep",
+      (nKeep + nUnsure
+        ? nKeep.toLocaleString() + " keep \u00b7 " +
+          nUnsure.toLocaleString() + " unsure"
+        : "no keep marks yet") + " - your decisions so far"),
+    btn("rescan", "Snapshot & rescans",
+      "snapshot " + SNAP.id + " \u00b7 " +
+      new Date(SNAP.started_at * 1000).toLocaleDateString() +
+      (dupFor == null ? " \u00b7 dup analysis never run"
+       : dupFor !== SNAP.id ? " \u00b7 dup analysis stale" : "")),
+  ].join("");
 }
 
 // The filter checkboxes, embedded in the focused view where they apply rather
@@ -951,11 +938,12 @@ async function renderRecommended() {
       // Older servers lack the status endpoints; treat them as idle.
       api("/api/reclaim_status").catch(() => ({ running: false })),
       api("/api/emptybin_status").catch(() => ({ running: false })),
-      api("/api/rescan_status").catch(() => ({ running: false }))])),
+      api("/api/rescan_status").catch(() => ({ running: false })),
+      api("/api/dupscan_status").catch(() => ({ running: false }))])),
     track("run log", api("/api/oplog").catch(() => ({ lines: [] })))]);
   RECO = { d, td, hist, plan, marks: {},
            st: { refresh: rst, batch: st[0], emptybin: st[1], rescan: st[2],
-                 oplog: ol.lines || [] } };
+                 dupscan: st[3], oplog: ol.lines || [] } };
   mergeMarks(dec);
   drawReco();
 }
@@ -963,26 +951,34 @@ async function renderRecommended() {
 // The decisions map is keyed on path, so it covers tree-dup members too -
 // the treedups API never joins them. Merge here so every slice ticks alike.
 function mergeMarks(dec) {
-  const marks = {};
-  for (const m of dec.decisions) marks[m.path] = m.choice;
+  const marks = {}, at = {};
+  for (const m of dec.decisions) {
+    marks[m.path] = m.choice;
+    at[m.path] = m.decided_at;
+  }
   RECO.marks = marks;
+  RECO.decAt = at;
   if (RECO.td.groups)
     for (const g of RECO.td.groups)
       for (const m of g.members) m.decision = marks[m.path];
 }
+
+// The slices that stage ticks and get the bottom apply bar; the bin, kept
+// and rescan areas act through their own buttons instead.
+const MARKABLE = new Set(["tier", "kind", "dups", "trees"]);
 
 function drawReco() {
   const { d, td, hist, plan } = RECO;
   view.innerHTML =
     '<div class="reco">' +
     '<aside class="reco-side">' +
-      '<div class="sideblock"><div class="side-h">next actions</div>' +
-        recoActions(d, td, hist, plan) + "</div>" +
+      '<div class="sideblock"><div class="side-h">areas</div>' +
+        recoNav(d, td, hist, plan) + "</div>" +
       '<div class="sideblock"><div class="side-h">progress</div>' +
         recoProgress(d, hist, plan) + "</div>" +
     "</aside>" +
     '<div class="reco-main' +
-      (RECO_FOCUS && RECO_FOCUS.t !== "pipeline" ? " padbar" : "") + '">' +
+      (RECO_FOCUS && MARKABLE.has(RECO_FOCUS.t) ? " padbar" : "") + '">' +
     (RECO_FOCUS ? focusBody() : overviewBody()) +
     "</div></div>";
 
@@ -992,7 +988,8 @@ function drawReco() {
   const co = document.getElementById("collapseall");
   if (co) co.onclick = () =>
     view.querySelectorAll("details.tdir").forEach(x => x.open = false);
-  if (RECO_FOCUS && RECO_FOCUS.t === "pipeline") wirePipeline();
+  if (RECO_FOCUS && RECO_FOCUS.t === "bin") wireBin();
+  else if (RECO_FOCUS && RECO_FOCUS.t === "rescan") wireRescan();
   else if (RECO_FOCUS) updateSelBar();
   // Filter boxes, focus links and bar buttons are wired through the delegated
   // document listeners below (data-fstate / data-focus / data-selact), so a
@@ -1004,7 +1001,7 @@ function drawReco() {
 // by the biggest unchecked line rather than a wall of nested trees.
 
 function overviewBody() {
-  const { d, td } = RECO;
+  const { d, td, hist } = RECO;
   const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
   const tally = items => {
     const t = {};
@@ -1041,7 +1038,7 @@ function overviewBody() {
       // would just move it inside itself, which the guard refuses anyway.
       rows += brow((KIND_META[k] || [k])[0], list.length.toLocaleString(),
                    sum(list), tally(list),
-                   k === "recycle_bin" ? "pipeline" : "kind:" + k, true);
+                   k === "recycle_bin" ? "bin" : "kind:" + k, true);
   }
   if (d.dup_sets.sets && d.dup_sets.sets.length) {
     const groups = {};
@@ -1077,12 +1074,30 @@ function overviewBody() {
       mk ? mk.toLocaleString() + " marked" : "", "trees", false,
       "whole folders that are copies of each other");
   }
-  return '<div class="note">Everything the inventory flagged, as units of ' +
-    'work. Pick a next step on the left or a row below - each opens a focused ' +
-    'list where ticks are staged and applied from the bar at the bottom. ' +
-    'Nothing is deleted here: marks land on the "Send to the Recycle Bin" ' +
-    'step, which asks again before anything moves.</div>' +
-    '<table><thead><tr><th>What needs a look</th><th class="num">items</th>' +
+  // Upkeep, not review work - but a stale analysis deserves a board line,
+  // since the duplicate rows above quietly mean "as of the last run".
+  const dupFor = d.dup_sets.computed_for;
+  if (dupFor == null || dupFor !== SNAP.id)
+    rows += brow("Duplicate analysis out of date",
+      dupFor == null ? "never run" : "ran on snapshot " + dupFor, "",
+      "re-run from Snapshot & rescans", "rescan", false,
+      "the duplicate lists above may be behind");
+  const pendingApps = hist.apps.filter(a => !a.done_at);
+  if (pendingApps.length)
+    rows += '<tr class="brow" data-tab="history"><td class="name">' +
+      "Apps marked for removal" +
+      '<div class="path">removal runs through Windows - confirm on ' +
+      "History</div></td>" +
+      '<td class="num">' + pendingApps.length + "</td>" +
+      '<td class="num">' +
+        size(pendingApps.reduce((a, x) => a + (x.bytes || 0), 0)) + "</td>" +
+      '<td class="num dim">pending</td><td class="num">&#8594;</td></tr>';
+  return '<h2 class="viewtitle">What needs a look</h2>' +
+    '<p class="hint">Everything the scan flagged that might be worth a ' +
+    "second look, grouped by what it is. Open a row to review it: ticking " +
+    "an item only stages a mark, and nothing moves until the marked batch " +
+    'is sent from "Marked for the Recycle Bin" on the left.</p>' +
+    '<table><thead><tr><th>suggestion</th><th class="num">items</th>' +
     '<th class="num">on disk</th><th class="num">status</th>' +
     '<th class="num"></th></tr></thead><tbody>' + rows + "</tbody></table>";
 }
@@ -1101,7 +1116,8 @@ function kindGroups(items, flat) {
     .sort((a, b) => sum(b) - sum(a))
     .map((list, gi) => {
       const meta = KIND_META[list[0].kind] || [list[0].kind, list[0].reason || ""];
-      return '<details class="tdir"' + (gi === 0 ? " open" : "") + "><summary>" +
+      return '<details class="tdir kind"' + (gi === 0 ? " open" : "") +
+        "><summary>" +
         grpBox() +
         '<span class="tdirname">' + esc(meta[0]) + "</span>" +
         '<span class="tstats">' + list.length.toLocaleString() +
@@ -1175,17 +1191,26 @@ function focusBody() {
                        blocked: !!(m.protected && !m.decision) });
       return dupTreesSection(td);
     }
-    if (f.t === "pipeline") {
-      title = "Send to the Recycle Bin";
-      sub = "The last two steps, in order. Step 1 moves every marked row to " +
-            "the Bin - reversible, and each batch is logged so it can be put " +
-            "back. Step 2 empties the Bin - permanent, and the only step " +
-            "that actually frees the space. Afterwards the folders that " +
-            "changed are rescanned and the snapshot reloads itself, so the " +
-            "numbers everywhere update within about a minute. No rescan is " +
-            "scheduled otherwise: a full walk stays manual (python scan.py).";
-      slice = [];
-      return pipelineBody();
+    if (f.t === "bin") {
+      title = "Marked for the Recycle Bin";
+      sub = "What your delete marks will do, in two steps. Step 1 moves " +
+            "the marked rows to the Bin - reversible, and each batch is " +
+            "logged so it can be put back. Step 2 empties the Bin - " +
+            "permanent, and the only step that actually frees the space.";
+      return binBody();
+    }
+    if (f.t === "kept") {
+      title = "Marked to keep";
+      sub = "The decisions made so far. 'unmark' takes a row back to " +
+            "undecided; 'to Bin' re-marks it for deletion.";
+      return keptBody();
+    }
+    if (f.t === "rescan") {
+      title = "Snapshot & rescans";
+      sub = "Every page reads from the snapshot named here. Folder " +
+            "rescans run on their own after a batch; a full rescan and " +
+            "the duplicate analysis are yours to start.";
+      return rescanBody();
     }
     return null;
   };
@@ -1213,16 +1238,15 @@ function focusBody() {
       for (const m of g.members)
         preSlice.push({ p: m.path, b: m.bytes_disk, dec: m.decision,
                         blocked: !!(m.protected && !m.decision) });
-  initSel(preSlice);
+  const hasMarks = MARKABLE.has(f.t);
+  if (hasMarks) initSel(preSlice);
   const content = build();
   if (content === null) { RECO_FOCUS = null; return overviewBody(); }
 
   const totalBytes = slice.reduce((a, r) => a + r.b, 0);
   const fInner = recoFilters(d, wantStates, wantKinds, wantTerrs);
-  // The pipeline is buttons, not ticks - no staged-selection bar for it.
-  const hasMarks = f.t !== "pipeline";
   return '<div class="focushead">' +
-      '<a href="#" data-focus="">&#8249; all recommendations</a>' +
+      '<a href="#" data-focus="">&#8249; overview</a>' +
       '<span class="focustitle">' + esc(title) + "</span>" +
       (hasMarks
         ? '<span class="tstats">' + slice.length.toLocaleString() +
@@ -1236,10 +1260,7 @@ function focusBody() {
       : "") +
     (hasMarks
       ? '<div class="controls"><button id="expandall">expand all</button>' +
-        '<button id="collapseall">collapse all</button>' +
-        '<span class="selflex"></span>' +
-        '<button data-selact="all">tick all listed</button>' +
-        '<button data-selact="none">tick none</button></div>'
+        '<button id="collapseall">collapse all</button></div>'
       : "") +
     (content || '<p class="hint">Nothing matches those filters.</p>') +
     (hasMarks ? '<div class="selbar" id="selbar"></div>' : "");
@@ -1253,9 +1274,9 @@ function elsewhereNote(c) {
   if (running)
     return "in use by " + running[1] + " - close the app and it can be marked";
   if (c.kind === "recycle_bin")
-    return "already in the Bin - step 2 of 'Send to the Recycle Bin' frees it";
+    return "already in the Bin - emptied from 'Marked for the Recycle Bin'";
   if (/^c:\\\$recycle\.bin/i.test(c.path))
-    return "already in the Bin - emptied from 'Send to the Recycle Bin'";
+    return "already in the Bin - emptied from 'Marked for the Recycle Bin'";
   if (c.kind === "winupdate")
     return "Windows' own tools clear this (Disk Cleanup)";
   if (c.kind === "wer")
@@ -1282,7 +1303,7 @@ function elsewhereSection(items) {
       '<span class="tage ' + m.cls + '">' + m.text + "</span>" +
       revealBtn(c.path) + "</div>";
   }).join("");
-  return '<details class="tdir elsewhere"><summary>' +
+  return '<details class="tdir kind elsewhere"><summary>' +
     '<span class="tdirname">Handled elsewhere - can\'t be sent to the Bin</span>' +
     '<span class="tstats">' + items.length.toLocaleString() + " items \u00b7 " +
       size(items.reduce((a, c) => a + c.bytes_disk, 0)) + "</span></summary>" +
@@ -1326,12 +1347,15 @@ function updateSelBar() {
   const bar = document.getElementById("selbar");
   if (!bar) return;
   const boxes = [...view.querySelectorAll("input[data-mark]")];
-  let n = 0, bytes = 0, diff = 0, marked = 0, mbytes = 0;
+  let n = 0, bytes = 0, diff = 0, marked = 0, mbytes = 0, clearable = 0;
   for (const b of boxes) {
     const p = b.dataset.mark, cur = SEL_DECID.get(p), sz = SEL_BYTES.get(p) || 0;
     if (cur === "delete") { marked++; mbytes += sz; }
-    if (b.checked) { n++; bytes += sz; if (cur !== "delete") diff++; }
-    else if (cur === "delete") diff++;
+    if (b.checked) {
+      n++; bytes += sz;
+      if (cur !== "delete") diff++;
+      if (cur) clearable++;
+    } else if (cur === "delete") diff++;
   }
   const dupSlice =
     RECO_FOCUS && (RECO_FOCUS.t === "dups" || RECO_FOCUS.t === "trees");
@@ -1339,21 +1363,23 @@ function updateSelBar() {
     '<span class="selstats"><b>' + n.toLocaleString() + "</b> selected \u00b7 " +
       size(bytes) + "</span>" +
     '<button data-selact="all">select all</button>' +
-    '<button data-selact="none">clear</button>' +
+    '<button data-selact="none">select none</button>' +
     (dupSlice
       ? '<button data-selact="rest" title="tick every copy but the first ' +
         'shown in each set">all but 1st copy</button>' : "") +
     '<button data-selact="copy">copy paths</button>' +
     '<span class="selflex"></span>' +
+    '<button data-selact="unmark"' + (clearable ? "" : " disabled") +
+      ">clear marks on checked</button>" +
     '<button data-selact="keep"' + (n ? "" : " disabled") +
-      ">mark checked as keep</button>" +
+      ">keep checked</button>" +
     '<button class="primary" data-selact="del"' + (diff ? "" : " disabled") +
       ">" + (diff ? "apply " + diff.toLocaleString() + " mark(s)"
                   : "marks up to date") + "</button>" +
     (marked
-      ? '<a href="#" data-focus="pipeline" class="selreview">' +
+      ? '<a href="#" data-focus="bin" class="selreview">' +
         marked.toLocaleString() + " marked \u00b7 " + size(mbytes) +
-        " \u2192 send to the Recycle Bin</a>" : "");
+        " \u2192 review &amp; send</a>" : "");
   // Group boxes mirror what their rows ended up as: all ticked, none, or
   // a mix. Keepers never count toward "all".
   view.querySelectorAll(".grpbox").forEach(g => {
@@ -1410,11 +1436,13 @@ function selAction(act) {
   }
   if (act === "del") applyMarks("delete");
   if (act === "keep") applyMarks("keep");
+  if (act === "unmark") applyMarks("none");
 }
 
-// Commit the visible selection as one batch: checked rows become 'delete'
-// (or 'keep'), and a ticked-off row that was marked is unmarked to 'unsure'.
-// Rows hidden by the filter are not touched.
+// Commit the visible selection as one batch: checked rows become 'delete',
+// 'keep', or have their mark cleared ('none' deletes the decision row), and
+// a ticked-off row that was marked is unmarked to 'unsure'. Rows hidden by
+// the filter are not touched.
 async function applyMarks(choice) {
   const boxes = [...view.querySelectorAll("input[data-mark]")];
   const pairs = [];
@@ -1423,13 +1451,19 @@ async function applyMarks(choice) {
     if (choice === "delete") {
       if (b.checked && cur !== "delete") pairs.push([p, "delete"]);
       else if (!b.checked && cur === "delete") pairs.push([p, "unsure"]);
-    } else if (b.checked && cur !== "keep") {
-      pairs.push([p, "keep"]);
+    } else if (choice === "keep") {
+      if (b.checked && cur !== "keep") pairs.push([p, "keep"]);
+    } else if (b.checked && cur) {
+      pairs.push([p, "none"]);
     }
   }
   if (!pairs.length) return;
   try {
     await apiPost("/api/decide", { decisions: pairs });
+    // A kept or cleared row must not stay staged for the Bin - a later
+    // "apply marks" would otherwise turn the tick back into a delete mark.
+    if (choice !== "delete")
+      for (const [p] of pairs) SEL.delete(p);
     const [d, plan, dec] = await Promise.all([
       api("/api/candidates"), api("/api/reclaim"), api("/api/decisions")]);
     RECO.d = d;
@@ -1441,15 +1475,15 @@ async function applyMarks(choice) {
   }
 }
 
-// ------------------------------------------------------------------ pipeline
+// -------------------------------------------------------- bin/rescan slices
 //
-// The last step of Recommended, where 'delete' marks become deletions: each
-// path is checked against the never-touch list, then moved to the Recycle
-// Bin and logged to a manifest under data/manifests/. Nothing runs from this
-// view loading; the only way anything moves is a button, and a batch that
-// contains a protected path aborts entirely. After anything moves, the
-// server rescans the affected folders and reloads the snapshot on its own -
-// the numbers here (and in the header) update without a manual rescan.
+// Where 'delete' marks become deletions: each path is checked against the
+// never-touch list, then moved to the Recycle Bin and logged to a manifest
+// under data/manifests/. Nothing runs from a view loading; the only way
+// anything moves is a button, and a batch that contains a protected path
+// aborts entirely. After anything moves, the server rescans the affected
+// folders and reloads the snapshot on its own - progress for that shows on
+// the Snapshot & rescans slice.
 
 let LAST_BATCH = null;
 
@@ -1458,7 +1492,7 @@ let LAST_BATCH = null;
 function pipeStatusText() {
   const st = (RECO && RECO.st) || {};
   const b = st.batch || {}, r = st.refresh || {}, e = st.emptybin || {},
-        rs = st.rescan || {};
+        rs = st.rescan || {}, ds = st.dupscan || {};
   if (b.running)
     return "Sending marked items to the Bin" + (b.pos ? " - " + b.pos : "") +
       (b.cur ? ": " + esc(b.cur) : "") +
@@ -1475,30 +1509,38 @@ function pipeStatusText() {
     return "Full rescan of the drive in progress" +
       (rs.line ? " - " + esc(rs.line) : "") +
       ". A whole-drive walk takes about 10 minutes; the page stays usable.";
+  if (ds.running)
+    return "Duplicate analysis running - hashing same-size files. The " +
+      "first run can take several minutes; the page stays usable.";
   if (b.error) return "Batch failed: " + b.error;
   if (e.error) return "Emptying failed: " + e.error;
   if (r.error) return "Rescan failed: " + r.error;
   if (rs.error) return "Full rescan failed: " + rs.error;
+  if (ds.error) return "Duplicate analysis failed: " + ds.error;
   if (rs.snapshot) return "Rescan finished - snapshot " + rs.snapshot +
     " loaded; the numbers shown are current.";
   if (r.reloaded) return "Snapshot updated - the numbers shown are current.";
+  if (ds.result && ds.result.ok)
+    return "Duplicate analysis finished - the duplicate lists are current.";
   return "";
 }
 
-// Step states for the pipeline rail: wait (blue), run (blue, pulsing),
-// done (green), err (red) - same vocabulary video-tools uses.
+// Step states for the cards: wait (blue), run (blue, pulsing), done (green),
+// err (red) - same vocabulary video-tools uses.
 function stepStates(st) {
   const b = st.batch || {}, r = st.refresh || {}, e = st.emptybin || {},
-        rs = st.rescan || {};
+        rs = st.rescan || {}, ds = st.dupscan || {};
   return {
-    scan: rs.running ? "run" : rs.error ? "err"
-        : rs.snapshot ? "done" : "wait",
     send: b.running ? "run" : b.error ? "err"
         : (b.result && b.result.ok) ? "done" : "wait",
-    rescan: (r.running || r.reloading) ? "run" : r.error ? "err"
-        : r.reloaded ? "done" : "wait",
     empty: e.running ? "run" : e.error ? "err"
         : (e.result && e.result.ok) ? "done" : "wait",
+    scan: rs.running ? "run" : rs.error ? "err"
+        : rs.snapshot ? "done" : "wait",
+    folders: (r.running || r.reloading) ? "run" : r.error ? "err"
+        : r.reloaded ? "done" : "wait",
+    dup: ds.running ? "run" : ds.error ? "err"
+        : (ds.result && ds.result.ok) ? "done" : "wait",
   };
 }
 
@@ -1551,29 +1593,31 @@ let PIPE_POLL = null;
 function ensurePipePoll() {
   if (PIPE_POLL) return;
   PIPE_POLL = setInterval(async () => {
-    if (!RECO || TAB !== "recommended" ||
-        !RECO_FOCUS || RECO_FOCUS.t !== "pipeline") {
+    if (!RECO || TAB !== "recommended" || !RECO_FOCUS ||
+        (RECO_FOCUS.t !== "bin" && RECO_FOCUS.t !== "rescan")) {
       clearInterval(PIPE_POLL); PIPE_POLL = null; return;
     }
-    let b, r, e, rs, ol;
+    let b, r, e, rs, ds, ol;
     try {
-      [b, r, e, rs, ol] = await Promise.all([
+      [b, r, e, rs, ds, ol] = await Promise.all([
         api("/api/reclaim_status"), api("/api/refresh_status"),
         api("/api/emptybin_status"),
-        // Older servers lack these two; missing means idle/quiet.
+        // Older servers lack these; missing means idle/quiet.
         api("/api/rescan_status").catch(() => ({})),
+        api("/api/dupscan_status").catch(() => ({})),
         api("/api/oplog").catch(() => ({ lines: [] }))]);
     } catch (e2) { return; }  // a dropped poll is not fatal; try next tick
-    RECO.st = { batch: b, refresh: r, emptybin: e, rescan: rs,
+    RECO.st = { batch: b, refresh: r, emptybin: e, rescan: rs, dupscan: ds,
                 oplog: (ol && ol.lines) || [] };
     paintPipe();
     const active = b.running || e.running || r.running || r.reloading ||
-                   rs.running;
+                   rs.running || ds.running;
     if (active) return;
     clearInterval(PIPE_POLL); PIPE_POLL = null;
     if (b.result && (!LAST_BATCH || LAST_BATCH.batch !== b.result.batch))
       LAST_BATCH = b.result;
-    if (b.result || e.result || r.reloaded || rs.snapshot) {
+    if (b.result || e.result || r.reloaded || rs.snapshot ||
+        (ds.result && ds.result.ok)) {
       SNAP = await api("/api/snapshot");
       renderHeader();
       await renderRecommended();
@@ -1591,7 +1635,7 @@ function stepCard(id, state, title, body) {
     body + "</div>";
 }
 
-function pipelineBody() {
+function binBody() {
   const d = RECO.plan, st = RECO.st || {};
   const bst = st.batch || {}, ebs = st.emptybin || {}, rst = st.refresh || {},
         sst = st.rescan || {};
@@ -1632,7 +1676,7 @@ function pipelineBody() {
             ? "Restored."
             : "Recycled - volume free delta " + size(LAST_BATCH.freed) +
               " (near zero is expected: the bytes sit in the Bin until " +
-              "step 3).") +
+              "step 2).") +
           " Manifest: " + esc(LAST_BATCH.manifest || "") + "."
         : esc(LAST_BATCH.error || "did not run")) + "</p>" +
       table(["Path", "Result"], LAST_BATCH.results
@@ -1646,7 +1690,6 @@ function pipelineBody() {
     : "";
 
   const oplog = (st.oplog || []);
-  const snapWhen = new Date(SNAP.started_at * 1000).toLocaleString();
 
   return '<div class="cards">' +
       card(d.entries.length.toLocaleString(), "marked for the Bin") +
@@ -1665,27 +1708,13 @@ function pipelineBody() {
         (d.pruned === 1 ? " drops" : "s drop") +
         " out of the recommendations.</div>"
       : "") +
-    stepCard("scan", ss.scan, "0 &middot; The snapshot this page is based on",
-      '<p class="hint">Taken ' + esc(snapWhen) + " (snapshot " + SNAP.id +
-      "). Deletes and stale-mark cleanups rescan only the folders they " +
-      "touched - about a minute each. A full walk re-measures the whole " +
-      "drive (~10 min) and reloads itself when it lands.</p>" +
-      '<div class="controls"><button id="fullscan"' +
-        (sst.running || rst.running ? " disabled" : "") +
-        ">rescan the whole drive</button>" +
-        '<span class="path">' +
-          (sst.running
-            ? "running - " + esc(sst.line || "walking C:\\")
-            : sst.snapshot
-              ? "done - snapshot " + sst.snapshot + " loaded"
-              : rst.running ? "a folder rescan is in progress - wait for it"
-              : "manual - run it when the snapshot feels stale") +
-        "</span></div>") +
-    stepCard("send", ss.send, "1 &middot; Send the marked rows to the Bin",
+    '<p class="hint">Step colours: <b>blue</b> is waiting or running, ' +
+    "<b>green</b> done, <b>red</b> failed.</p>" +
+    stepCard("send", ss.send, "Step 1 &middot; Send the marked items to the Bin",
       (d.entries.length
         ? table(["Path", "On disk", "Files", "Modified", "Status", ""], erows)
         : '<p class="hint">Nothing is marked yet - tick rows in any ' +
-          '<a href="#" data-focus="">recommendation</a> and apply them, and ' +
+          '<a href="#" data-focus="">review list</a> and apply them, and ' +
           "they show up here.</p>") +
       '<div class="controls">' +
         '<button id="runbatch"' +
@@ -1699,35 +1728,176 @@ function pipelineBody() {
               ? "blocked - unmark the refused rows first"
               : "nothing marked") +
         "</span></div>") +
-    stepCard("rescan", ss.rescan, "2 &middot; Rescan the folders that changed",
-      '<p class="hint">Automatic - after a batch, each folder that lost ' +
-      "content is rescanned and the snapshot reloads, so the sizes (and " +
-      "the Bin figure) stop lagging. Nothing to click here" +
-      (rst.running
-        ? "; now scanning " + (rst.done.length + 1) + " of " +
-          (rst.done.length + (rst.queue || []).length) +
-          (rst.line ? " - " + esc(rst.line) : "")
-        : rst.reloaded ? "; done - the snapshot is current" : "") +
-      ".</p>") +
-    stepCard("empty", ss.empty, "3 &middot; Empty the Recycle Bin",
+    stepCard("empty", ss.empty, "Step 2 &middot; Empty the Recycle Bin",
       '<div class="controls"><button id="emptybin"' +
         (d.bin.bytes && !anyRunning ? "" : " disabled") +
         ">empty it permanently</button>" +
         '<span class="path">' + d.bin.files.toLocaleString() + " items, " +
         size(d.bin.bytes) + " at the last scan \u2014 permanent, already " +
         "deleted once. The Bin is rescanned afterwards on its own.</span></div>") +
+    '<p class="hint">After a batch, the folders that changed are rescanned ' +
+    'on their own - progress is under ' +
+    '<a href="#" data-focus="rescan">Snapshot &amp; rescans</a>. Nothing ' +
+    "else to click here.</p>" +
     (oplog.length
       ? '<pre class="oplog" id="oplog">' + esc(oplog.join("\n")) + "</pre>"
       : '<pre class="oplog" id="oplog" style="display:none"></pre>') +
     last +
     '<p class="hint" style="margin-top:16px">Past batches - including ' +
-    'restoring one - live on the <a href="#" data-tab="history">History</a> ' +
-    "tab.</p>";
+    'restoring one - live on <a href="#" data-tab="history">History</a>' +
+    ".</p>";
 }
 
-// The buttons exist only while the pipeline slice is open; wire them after
-// each drawReco and (re)start the status poller if work is in flight.
-function wirePipeline() {
+function rescanBody() {
+  const st = RECO.st || {};
+  const rst = st.refresh || {}, sst = st.rescan || {}, dst = st.dupscan || {};
+  const ss = stepStates(st);
+  const dupFor = RECO.d.dup_sets.computed_for;
+  const tl = ((RECO.hist && RECO.hist.timeline) || []).slice().reverse();
+  const trows = tl.map(s => "<tr>" +
+    '<td class="num">' + s.id + "</td>" +
+    "<td>" + new Date((s.finished_at || s.started_at) * 1000)
+      .toLocaleString() + "</td>" +
+    '<td class="num">' + s.n_files.toLocaleString() + "</td>" +
+    '<td class="num">' + size(s.bytes_disk) + "</td>" +
+    '<td class="num">' + size(s.volume_free_bytes) + "</td>" +
+    "<td>" + (s.refresh_path
+      ? "refresh of <span class=\"path\">" + esc(s.refresh_path) + "</span>"
+      : "full walk") + "</td></tr>").join("");
+  const oplog = (st.oplog || []);
+
+  return '<div class="cards">' +
+      card("snapshot " + SNAP.id, "current snapshot") +
+      card(new Date(SNAP.started_at * 1000).toLocaleString(), "taken") +
+      card(SNAP.n_files.toLocaleString(), "files") +
+      card(size(SNAP.bytes_disk), "on disk") +
+    "</div>" +
+    '<div class="note" id="pipestatus">' + pipeStatusText() + "</div>" +
+    '<p class="hint">Step colours: <b>blue</b> is waiting or running, ' +
+    "<b>green</b> done, <b>red</b> failed.</p>" +
+    stepCard("scan", ss.scan, "Rescan the whole drive",
+      '<p class="hint">A fresh walk of the whole drive - about 10 ' +
+      "minutes. It becomes the new snapshot when it lands and every " +
+      "page's numbers update. Run it when the snapshot feels stale.</p>" +
+      '<div class="controls"><button id="fullscan"' +
+        (sst.running || rst.running ? " disabled" : "") +
+        ">rescan the whole drive</button>" +
+        '<span class="path">' +
+          (sst.running
+            ? "running - " + esc(sst.line || "walking C:\\")
+            : sst.snapshot
+              ? "done - snapshot " + sst.snapshot + " loaded"
+              : rst.running ? "a folder rescan is in progress - wait for it"
+              : "not running") +
+        "</span></div>") +
+    stepCard("folders", ss.folders, "Folder rescans",
+      '<p class="hint">Automatic - after a batch, each folder that lost ' +
+      "content is rescanned (about a minute each) and the snapshot " +
+      "reloads, so the sizes stop lagging what is actually on disk" +
+      (rst.running
+        ? "; now scanning " + (rst.done.length + 1) + " of " +
+          (rst.done.length + (rst.queue || []).length) +
+          (rst.line ? " - " + esc(rst.line) : "")
+        : rst.reloaded ? "; done - the snapshot is current" : "") +
+      ".</p>") +
+    stepCard("dup", ss.dup, "Duplicate analysis",
+      '<p class="hint">' +
+        (dupFor == null
+          ? "Never run - the duplicate lists stay empty until it hashes " +
+            "the disk once. Read-only; several minutes the first time."
+          : dupFor !== SNAP.id
+            ? "Computed for snapshot " + dupFor + ", which is no longer " +
+              "current - the duplicate lists may be behind. Re-run to " +
+              "refresh them (read-only; can take minutes)."
+            : "Up to date - computed for this snapshot (" + dupFor + ").") +
+      "</p>" +
+      '<div class="controls"><button id="dupscan"' +
+        (dst.running ? " disabled" : "") +
+        ">re-run duplicate analysis</button>" +
+        '<span class="path">' +
+          (dst.running
+            ? "running - hashing same-size files"
+            : dst.error ? "failed: " + esc(dst.error)
+            : "hashes files; nothing is deleted") +
+        "</span></div>") +
+    '<h3 class="step">Snapshot history</h3>' +
+    (trows
+      ? table(["#", "Taken", "Files", "On disk", "Free", "Kind"], trows)
+      : '<p class="hint">No snapshots yet.</p>') +
+    (oplog.length
+      ? '<pre class="oplog" id="oplog">' + esc(oplog.join("\n")) + "</pre>"
+      : '<pre class="oplog" id="oplog" style="display:none"></pre>');
+}
+
+// Everything the user has decided, so a mark can be reviewed and taken back
+// in one place. 'delete' marks are not repeated here - the Bin slice owns
+// them - but keep and unsure marks otherwise only existed inside the lists
+// they were made on.
+function keptBody() {
+  const marks = RECO.marks || {};
+  const sizeOf = new Map(), dirOf = new Map();
+  const learn = (p, b, id) => {
+    if (b != null && !sizeOf.has(p)) sizeOf.set(p, b);
+    if (id != null && !dirOf.has(p)) dirOf.set(p, id);
+  };
+  for (const c of RECO.d.items) learn(c.path, c.bytes_disk, c.dir_id);
+  for (const s of RECO.d.dup_sets.sets || [])
+    for (const m of s.members)
+      learn(m.path, m.bytes_disk != null ? m.bytes_disk : m.bytes_logical,
+            m.dir_id);
+  for (const g of RECO.td.groups || [])
+    for (const m of g.members) learn(m.path, m.bytes_disk, m.dir_id);
+  const nDel = Object.values(marks).filter(c => c === "delete").length;
+
+  const section = (label, choice, empty) => {
+    const rows = Object.keys(marks).filter(p => marks[p] === choice)
+      .sort((a, b) => (sizeOf.get(b) || 0) - (sizeOf.get(a) || 0))
+      .map(p => {
+        const dirId = dirOf.get(p);
+        return '<div class="trow"><span class="tname">' +
+          (dirId ? '<a href="#" data-dir="' + dirId + '">' + esc(p) + "</a>"
+                 : esc(p)) +
+          ' <span class="treason">' +
+            (RECO.decAt && RECO.decAt[p]
+              ? "marked " + new Date(RECO.decAt[p] * 1000).toLocaleDateString()
+              : "") +
+            (sizeOf.has(p) ? "" : " - not in the current lists") +
+          "</span></span>" +
+          '<span class="tsize">' +
+            (sizeOf.has(p) ? size(sizeOf.get(p)) : "") + "</span>" +
+          '<span class="tfiles"></span><span class="tage"></span>' +
+          revealBtn(p) +
+          '<a href="#" data-todelete="' + esc(p) + '">to Bin</a> ' +
+          '<a href="#" data-unmark="' + esc(p) + '">unmark</a></div>';
+      }).join("");
+    return '<h3 class="step">' + label + "</h3>" +
+      (rows || '<p class="hint">' + empty + "</p>");
+  };
+
+  return (nDel
+      ? '<p class="hint">' + nDel.toLocaleString() +
+        ' item(s) are marked for the Bin - they are listed under ' +
+        '<a href="#" data-focus="bin">Marked for the Recycle Bin</a>.</p>'
+      : "") +
+    section("Keep", "keep",
+            "Nothing yet - tick rows in a review list and apply 'keep " +
+            "checked'.") +
+    section("Unsure", "unsure",
+            "Rows you looked at and put aside land here.");
+}
+
+// The buttons exist only while their slice is open; wire them after each
+// drawReco and (re)start the status poller if work is in flight.
+function kickPoller() {
+  const st = RECO.st || {};
+  const r = st.refresh || {}, b = st.batch || {}, e = st.emptybin || {},
+        s = st.rescan || {}, d = st.dupscan || {};
+  if (b.running || e.running || r.running || r.reloading || s.running ||
+      d.running)
+    ensurePipePoll();
+}
+
+function wireBin() {
   const rb = document.getElementById("runbatch");
   if (rb) rb.onclick = async () => {
     if (!confirm("Send " + RECO.plan.actionable +
@@ -1754,6 +1924,10 @@ function wirePipeline() {
       alert("empty did not start: " + e2.message);
     }
   };
+  kickPoller();
+}
+
+function wireRescan() {
   const fs = document.getElementById("fullscan");
   if (fs) fs.onclick = async () => {
     if (!confirm("Rescan the whole drive? It takes about 10 minutes and " +
@@ -1768,11 +1942,21 @@ function wirePipeline() {
       alert("rescan did not start: " + e2.message);
     }
   };
-  const st = RECO.st || {};
-  const r = st.refresh || {}, b = st.batch || {}, e = st.emptybin || {},
-        s = st.rescan || {};
-  if (b.running || e.running || r.running || r.reloading || s.running)
-    ensurePipePoll();
+  const ds = document.getElementById("dupscan");
+  if (ds) ds.onclick = async () => {
+    if (!confirm("Re-run duplicate analysis? It hashes every same-size " +
+                 "file and can take several minutes."))
+      return;
+    try {
+      await apiPost("/api/dupscan");
+      RECO.st.dupscan = { running: true };
+      drawReco();
+      ensurePipePoll();
+    } catch (e2) {
+      alert("duplicate analysis did not start: " + e2.message);
+    }
+  };
+  kickPoller();
 }
 
 // ------------------------------------------------------------------ history
@@ -1982,16 +2166,20 @@ async function renderSearch(term) {
 
 const RENDER = {
   recommended: renderRecommended,
-  history: renderHistory,
-  folders: renderFolders, types: renderTypes, age: renderAge,
+  folders: renderFolders,
+  stats: () => RENDER[STAT_NAMES.has(SUB) ? SUB : "types"](),
+  history: renderHistory, types: renderTypes, age: renderAge,
   biggest: renderBiggest, video: renderVideo, empty: renderEmpty,
   software: renderSoftware,
 };
 
-function show(tab) {
-  TAB = tab;
+// A stat sub-view name ("age", "history", ...) routes into the Stats tab with
+// that sub-view selected, so links from anywhere still work.
+function show(name) {
+  if (STAT_NAMES.has(name)) { TAB = "stats"; SUB = name; }
+  else TAB = name;
   renderHeader();
-  RENDER[tab]().catch(fail);
+  RENDER[TAB]().catch(fail);
 }
 
 document.addEventListener("click", e => {
@@ -2050,7 +2238,8 @@ document.addEventListener("click", e => {
   const grp = e.target.closest("[data-grp]");
   if (grp) {
     e.preventDefault();
-    BIG = { grp: grp.dataset.grp, min_mb: 10, years: 0, cloud: false };
+    BIG = { grp: grp.dataset.grp, min_mb: 10, years: 0, cloud: false,
+            basis: "mtime" };
     show("biggest");
     return;
   }
@@ -2067,7 +2256,15 @@ document.addEventListener("click", e => {
   const un = e.target.closest("[data-unmark]");
   if (un) {
     e.preventDefault();
-    apiPost("/api/decide", { path: un.dataset.unmark, choice: "unsure" })
+    apiPost("/api/decide", { path: un.dataset.unmark, choice: "none" })
+      .then(() => TAB === "recommended" ? renderRecommended() : show(TAB));
+    return;
+  }
+
+  const td2 = e.target.closest("[data-todelete]");
+  if (td2) {
+    e.preventDefault();
+    apiPost("/api/decide", { path: td2.dataset.todelete, choice: "delete" })
       .then(() => TAB === "recommended" ? renderRecommended() : show(TAB));
     return;
   }
@@ -2102,7 +2299,7 @@ document.addEventListener("click", e => {
             path: r.path, ok: r.restored, error: r.error || "not restored",
           })),
         };
-        RECO_FOCUS = { t: "pipeline" };
+        RECO_FOCUS = { t: "bin" };
         if (TAB !== "recommended") show("recommended");
         else drawReco();
       });

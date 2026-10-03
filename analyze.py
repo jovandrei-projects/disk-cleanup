@@ -413,9 +413,10 @@ def compute_dup_sets(db, sid, floor=DUP_FLOOR, log=sys.stderr):
     collides, so most of the candidate mass is never fully read.
     """
     ensure_schema(db)
-    db.execute("DELETE FROM dup_members WHERE set_id IN"
-               " (SELECT id FROM dup_sets WHERE snapshot_id=?)", (sid,))
-    db.execute("DELETE FROM dup_sets WHERE snapshot_id=?", (sid,))
+    # The DELETEs are deliberately NOT up front: they would open a write
+    # transaction that then stays open through the whole hashing phase,
+    # blocking every other writer (the viewer's marks included) for minutes.
+    # Hash first, then swap the sets in one short transaction at the end.
 
     rows = db.execute(
         "SELECT f.id, f.bytes_logical, f.bytes_disk, f.mtime,"
@@ -468,10 +469,21 @@ def compute_dup_sets(db, sid, floor=DUP_FLOOR, log=sys.stderr):
             m["sha"] = sha
             by_sha.setdefault(sha, []).append(m)
         found += [ms for ms in by_sha.values() if len(ms) > 1]
-        if log and i % 50 == 49:
-            log.write("\r  full hash: %d/%d groups" % (i + 1, len(survivors)))
-            log.flush()
+        if i % 50 == 49:
+            # Flush the hash-cache inserts as they accumulate; holding them
+            # in one transaction keeps the write lock for the whole phase.
+            db.commit()
+            if log:
+                log.write("\r  full hash: %d/%d groups"
+                          % (i + 1, len(survivors)))
+                log.flush()
+    db.commit()
 
+    # Swap in the new sets atomically - the previous list stays readable
+    # until the replacement is ready.
+    db.execute("DELETE FROM dup_members WHERE set_id IN"
+               " (SELECT id FROM dup_sets WHERE snapshot_id=?)", (sid,))
+    db.execute("DELETE FROM dup_sets WHERE snapshot_id=?", (sid,))
     for members in found:
         cur = db.execute(
             "INSERT INTO dup_sets (snapshot_id, sha256, bytes_logical,"
@@ -699,7 +711,9 @@ def _prove_trees(db, meta, kids, cache, ids):
             h.update(rel.encode("utf-8", "surrogateescape")
                      + b"\0" + sha.encode())
         sigs.append(h.digest())
-    db.commit()
+        # Flush the hash-cache writes per member: the write lock otherwise
+        # stays held through the whole group's hashing.
+        db.commit()
     return len(set(sigs)) == 1
 
 
