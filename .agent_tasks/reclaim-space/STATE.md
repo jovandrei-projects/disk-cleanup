@@ -90,8 +90,40 @@ Order set by the user 2026-09-28: bundled removals first, then granular.
 
 ## Where it stopped
 
-See the last session entry (2026-10-02) - the viewer UX redesign landed,
-was verified live, and the commit is next. Side effect to know: the
+2026-10-06: UX polish pass answering the fourth feedback round (all
+frontend, `web/app.js` + `web/style.css` only - no backend changes):
+
+- One grid for every row: `.trow` pads the missing arrow gutter (18px) so
+  all names share one column. Guard-refused rows get a greyed disabled
+  checkbox (`offbox`) instead of a mid-row "can't be sent" tag - the reason
+  moved to the row end (`guardTag`). Groups with nothing tickable get an
+  inert greyed `grpbox.off` (clicking just folds the group), including
+  "Handled elsewhere" and zero-boxable dup sets; dup-territory panels got
+  real group boxes.
+- Consistent naming: "the Recycle Bin" everywhere; step 2 is "Empty the
+  Windows Recycle Bin" and its copy says it is the real system bin.
+- Selbar apply button now says what it does - "&#9851; mark N for the
+  Recycle Bin" / "unmark N" / "apply N mark changes" (splits added vs
+  removed ticks). Buttons show a floating `#working` badge
+  (`workOn`/`workOff`) and the bar dims while applying.
+- Unmark / re-mark no longer flash "loading...": `refreshRecommended`
+  re-fetches in place under the badge (`fetchReco`/`recoStore` factored out
+  of `renderRecommended`).
+- Step cards gained an `idle` (grey) state - blue is now only "ready to
+  run" (marks pending / bin non-empty / dup analysis stale), not the
+  default look of a card with nothing to do.
+- Expanded/collapsed groups survive redraws and tab switches: `detailsKey`
+  (chain of summary labels + same-label sibling index) + `DETAILS_OPEN`,
+  saved on draw and recorded live via a capturing `toggle` listener.
+- "Handled elsewhere" intro now says what to do: close the owning app, run
+  Disk Cleanup / Storage Sense, or empty the Recycle Bin from step 2.
+- Gates: `node --check`, `py_compile`, `test_render.js` (bin-slice
+  expectations updated for the renames) and `reclaim.py --self-test` all
+  green. Serve is per-request `no-store`, so the running viewer picks the
+  changes up on a page reload - no restart needed.
+
+Earlier entries below; open asks are unchanged (installers tier,
+personal-territory dup split, video decision). Side effect to know: the
 reclaim self-test runs the real pending batch, and the user's WhatsApp
 Cache mark recycled cleanly this time (the Errno 124 was transient) - it
 was restored, so nothing is lost, but the mark was consumed and the user

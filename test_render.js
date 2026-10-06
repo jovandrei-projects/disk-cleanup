@@ -155,7 +155,8 @@ function assertRendered(name, mustContain) {
     app.setFocus({ t: "bin" });
     app.drawReco();
     assertRendered("recommended focus: bin",
-      ["Send the marked items to the Bin", "Empty the Recycle Bin",
+      ["Send the marked items to the Recycle Bin",
+       "Empty the Windows Recycle Bin",
        "id=\"runbatch\"", "id=\"emptybin\"",
        "id=\"pipestatus\"", "id=\"oplog\"", "stepc"]);
     app.setFocus({ t: "rescan" });

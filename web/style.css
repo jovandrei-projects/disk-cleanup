@@ -161,9 +161,13 @@ details.tdir[open] > summary::before { content: "\25BE"; /* ▾ */ }
 .tdirname { color: var(--accent); font-weight: 500; }
 .tstats { color: var(--dim); font-size: 11.5px; margin-left: 10px; }
 
+/* Every row and every group summary share one grid: a 14px arrow gutter,
+   then a 24px box slot, then the name. A leaf row pads out the missing
+   arrow (4 + 14 = 18) so its box sits under the summaries' boxes and all
+   names line up at the same column. */
 .trow {
   display: flex; align-items: baseline; gap: 10px;
-  padding: 2px 4px; border-radius: 3px;
+  padding: 2px 4px 2px 18px; border-radius: 3px;
 }
 .trow:hover { background: #1e222a; }
 .trow .tname { flex: 1; min-width: 0; word-break: break-all; }
@@ -264,11 +268,15 @@ details.filt[open] > summary::before { content: "\25BE\00a0 "; }
 }
 
 /* group boxes are drawn spans (a focusable <input> inside <summary> trips
-   the accessibility audit); .on = all ticked, .mix = some */
+   the accessibility audit); .on = all ticked, .mix = some. .off fills the
+   slot on groups with nothing tickable so titles stay on the grid. */
 details.tdir > summary > .grpbox {
-  display: inline-block; width: 12px; height: 12px; margin-right: 8px;
+  display: inline-block; width: 14px; height: 14px; margin-right: 10px;
   border: 1px solid var(--dim); border-radius: 3px; cursor: pointer;
-  vertical-align: -1px; flex: none;
+  vertical-align: -2px; flex: none;
+}
+details.tdir > summary > .grpbox.off {
+  border-color: var(--line); cursor: default; opacity: .55;
 }
 details.tdir > summary > .grpbox.on {
   background: var(--accent); border-color: var(--accent);
@@ -278,22 +286,32 @@ details.tdir > summary > .grpbox.mix {
   border-color: var(--accent);
 }
 
-/* the pipeline slice's stage cards - wait/run are blue, done green,
-   err red, same vocabulary as video-tools */
+/* a row the guard refuses keeps a greyed, dead box in the slot */
+.trow input[type="checkbox"]:disabled { cursor: default; opacity: .45; }
+
+/* "can't be recycled" note, pinned to the end of a blocked row */
+.tag.nog { color: var(--warn); border-color: #4a3a2a; }
+
+/* the pipeline slice's stage cards - idle is grey (nothing queued), wait
+   and run are blue, done green, err red, same vocabulary as video-tools */
 .stepc {
-  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border: 1px solid var(--line); border-left: 3px solid var(--line);
   border-radius: 5px; padding: 10px 14px; margin: 12px 0;
 }
 .stepc .steph { font-size: 13px; font-weight: 600; margin-bottom: 8px;
   display: flex; align-items: center; gap: 8px; }
 .stepc .sdot {
-  width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+  width: 9px; height: 9px; border-radius: 50%; background: var(--line);
   flex: none;
 }
 .stepc .sstat { margin-left: auto; color: var(--dim); font-size: 11px;
   font-weight: 400; }
+.stepc.wait { border-left-color: var(--accent); }
+.stepc.wait .sdot { background: var(--accent); }
 .stepc.run { border-left-color: var(--accent); }
-.stepc.run .sdot { animation: pulse 1.2s ease-in-out infinite; }
+.stepc.run .sdot {
+  background: var(--accent); animation: pulse 1.2s ease-in-out infinite;
+}
 .stepc.done { border-left-color: var(--good); }
 .stepc.done .sdot { background: var(--good); }
 .stepc.done .sstat { color: var(--good); }
@@ -337,6 +355,21 @@ details.elsewhere .tname { color: var(--dim); }
   white-space: nowrap; }
 
 .loading { color: var(--dim); padding: 20px 0; }
+
+/* the floating "working" badge for quick mutations; and the selbar dimmed
+   while its apply is in flight */
+#working {
+  position: fixed; right: 18px; bottom: 56px; z-index: 20;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 5px; padding: 8px 12px; color: var(--dim);
+  font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.45);
+}
+#working .wdot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--accent); animation: pulse 1.2s ease-in-out infinite;
+}
+.selbar.busy { opacity: .55; pointer-events: none; }
 /* Recommended's fetch checklist - each step greys in as its endpoint lands */
 .lsteps { margin-top: 8px; }
 .lstep { display: inline-block; margin: 0 10px 4px 0; opacity: 0.35; }
