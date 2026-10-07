@@ -90,6 +90,40 @@ Order set by the user 2026-09-28: bundled removals first, then granular.
 
 ## Where it stopped
 
+2026-10-07 (marking pass): the user asked for keep/trash marks on every
+Recommended item, applied with their judgement calls. 752 decisions written
+via `/api/decide` (95 delete / 656 keep / 1 stale test row cleared). The
+review policy and the full path lists live in `.agent_tasks/reclaim-space/
+marks.py` - rerunnable and auditable. `survey.py` beside it is the
+read-only analysis scratch used to build it.
+
+User answers: Android emulator stack delete (~12.8 GB: Pixel_3a AVD +
+android-34 system-images tree), Nintendo dump trees delete
+(`Escritorio\Nintendo\Contents` 85.8 GB + `Nintendo\save` 1.1 GB - note the
+folder is 87 GB, larger than the ~30 GB the candidate rows showed, because
+only >500MB files were listed; `Nintendo\Album` screenshots were left
+unmarked), video-tools `.venv` keep (so all 23 venv<->Python311 torch dup
+members marked keep).
+
+Batch plan verified: `GET /api/reclaim` shows 95 actionable entries,
+0 blocked, 0 pruned, `can_run`, no cloud-only placeholders. Unique
+football-field figure is ~106 GB (the 174.85 GB total double-counts
+dir+member nested marks, which run_batch reports as covered_by).
+Nothing executed - the user still presses "Send to the Recycle Bin".
+
+Notable non-marks: all 400 empty_dir rows are WinSxS (guarded, correctly
+untouchable); system/appdata-territory dup sets left report-only by design;
+`IdeaProjects\LifeOrchestrator\temp-awesome-copilot` is a proven-identical
+clone of the copilot marketplace dir - members marked keep, but the whole
+folder (~0.1 GB) is a user question for Phase 5; `Microsoft VS Code\_` is a
+stray staged-update-looking dir inside the VS Code install - flagged, not
+touched; Smash Bros pair `26_jump_shield.mp4`/`27_aerial_oos.mp4` are
+byte-identical under different names (probable mis-export), both kept.
+
+Earlier entries below; open asks are unchanged apart from what this pass
+resolved (the installers tier is now mostly marked delete - Basemark,
+Sibelius, Windsurf/Typora/marktext payloads - pending the batch run).
+
 2026-10-06: UX polish pass answering the fourth feedback round (all
 frontend, `web/app.js` + `web/style.css` only - no backend changes):
 
