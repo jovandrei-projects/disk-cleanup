@@ -1,7 +1,7 @@
 # Task: Reclaim space - marked decisions become deletions, reversibly
 
 **Status:** in progress
-**Started:** 2026-09-28   **Last touched:** 2026-10-01 (late)
+**Started:** 2026-09-28   **Last touched:** 2026-10-07
 
 ## Objective
 
@@ -121,6 +121,32 @@ frontend, `web/app.js` + `web/style.css` only - no backend changes):
   expectations updated for the renames) and `reclaim.py --self-test` all
   green. Serve is per-request `no-store`, so the running viewer picks the
   changes up on a page reload - no restart needed.
+
+2026-10-07: two fixes from user feedback.
+
+- Intro paragraphs inside group panels (`details.kind > .hint`) sat at the
+  panel's left edge. They now start where the children's checkboxes start:
+  22px inside `ul.tree` panels (ul padding 4 + summary padding 4 + arrow
+  14) and 18px for "Handled elsewhere"'s direct `.trow` rows.
+- Guarded rows could offer a live "delete me" box: `blocked` was
+  `guard && !decision`, so a keep-marked `$Recycle.Bin` rendered a real
+  checkbox whose only effect was staging a mark the batch must refuse
+  (the user's test tick proved it - batch showed "refused: protected
+  system area"). Now `blocked = guard/protected && decision !== "delete"`
+  across leafRow, dupMemberRow, dupTreesSection and the slice/boxable
+  flags: a guarded row keeps a live box only while it carries a 'delete'
+  mark, because the box's one job there is unmarking. `markable` still
+  lists decided rows so their decision tag stays visible.
+- Step 2 ("Empty the Windows Recycle Bin") gained a "look inside it in
+  Explorer" link; `reveal()` special-cases `C:\$Recycle.Bin` to
+  `explorer.exe shell:RecycleBinFolder` (the Bin's own window with
+  original locations and restore verbs) instead of the raw $I/$R view.
+- The user's test 'delete' mark on `C:\$Recycle.Bin` was restored to its
+  prior 'keep' via `/api/decide`.
+- The link looked dead because Python changes are not no-store: the
+  viewer had to be restarted (`pythonw app.py --no-browser`, old PID
+  killed first - trap 18). Verified: one LISTENING line, endpoint opens
+  the friendly Bin window.
 
 Earlier entries below; open asks are unchanged (installers tier,
 personal-territory dup split, video decision). Side effect to know: the

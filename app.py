@@ -946,6 +946,12 @@ def start_rescan(store):
 
 def reveal(path):
     """Ask Explorer to highlight a path. No shell, so the path cannot inject."""
+    if normpath(path) == r"c:\$recycle.bin":
+        # The Bin's own window - original locations, restore verbs - not the
+        # raw $I/$R folder view explorer would show for the directory.
+        subprocess.Popen(["explorer.exe", "shell:RecycleBinFolder"],
+                         shell=False)
+        return {"ok": True}
     if not path or not os.path.exists(path):
         return {"ok": False, "error": "path does not exist"}
     try:
