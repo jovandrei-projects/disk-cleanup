@@ -148,6 +148,34 @@ frontend, `web/app.js` + `web/style.css` only - no backend changes):
   killed first - trap 18). Verified: one LISTENING line, endpoint opens
   the friendly Bin window.
 
+2026-10-07 (second pass): fifth feedback round, frontend-only again
+(`web/app.js` + `web/style.css` + `test_render.js` - no backend changes):
+
+- "narrow this list" removed with all its machinery: `recoFilters`,
+  `recoToggle`, the `RECO_KINDS/STATES/TERR` state, the `data-f*`
+  change-handler branch, and the `.filt`/`.flt` CSS. Slices always show
+  the full list now.
+- Board reworked (`overviewBody`): a "can mark" column counts the rows a
+  batch could actually touch (guard passes), and the status cell is now
+  coloured progress chips - blue marked / green kept / amber unsure /
+  dim "N to review", "done" when nothing remains. Dup rows report
+  "N sets/groups to review" plus copies marked.
+- "Recycle Bin contents" is out of "Safe to remove": a "Your marks"
+  section groups Marked for the Recycle Bin / Marked to keep / The
+  Recycle Bin itself (all open the bin/kept slices), and a "Handled
+  elsewhere" section collects kinds whose every row is guard-refused
+  (empty folders under protected roots, Windows Update, WER), each row
+  naming what actually deals with it. That is the "workable items" ask:
+  a 400-item kind with nothing tickable no longer sits in the
+  suggestions looking like work.
+- "Handled elsewhere" row misalignment fixed: its direct `.trow`
+  children pad to the shared 22px box column (they sat 4px left of the
+  `ul.tree` rows; the matching 18px `.hint` override is gone, the 22px
+  `details.kind` rule covers it).
+- Gates: `node --check` and `test_render.js` all green; board dumped to
+  text and eyeballed (Safe to remove = 39 items / 6 markable; Empty
+  folders = 400 items / 0 markable, now under Handled elsewhere).
+
 Earlier entries below; open asks are unchanged (installers tier,
 personal-territory dup split, video decision). Side effect to know: the
 reclaim self-test runs the real pending batch, and the user's WhatsApp

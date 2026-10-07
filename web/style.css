@@ -86,6 +86,13 @@ details.kind {
 details.kind > summary .tdirname { font-weight: 600; }
 details.kind > ul.tree { margin-top: 6px; }
 
+/* a panel's intro line starts where its children's boxes start: inside
+   ul.tree a summary's box sits at 4 + 4 + 14 (arrow) = 22px. "Handled
+   elsewhere" rows are direct children, so their padding is bumped by the
+   missing 4px of ul.tree to land on the same column. */
+details.kind > .hint { padding-left: 22px; }
+details.elsewhere > .trow { padding-left: 22px; }
+
 main { padding: 16px; }
 .hint { color: var(--dim); margin: 0 0 12px; max-width: 78ch; }
 
@@ -215,25 +222,32 @@ details.tdir[open] > summary::before { content: "\25BE"; /* ▾ */ }
 .brow.sub td.name { padding-left: 26px; color: var(--dim); }
 .brow td.name { font-weight: 500; }
 .brow.sub td.name { font-weight: 400; }
+.brow td.st { white-space: normal; }
+
+/* a section's label row inside the board - not itself clickable */
+tr.bsec td {
+  color: var(--dim); font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; padding-top: 16px;
+  cursor: default;
+}
+tr.bsec:hover { background: transparent; }
+tr.bsec .bnote {
+  text-transform: none; letter-spacing: 0; font-weight: 400;
+  font-size: 11.5px;
+}
+
+/* the board's per-row review state: marked / kept / unsure / still open */
+.pg { font-weight: 400; white-space: nowrap; }
+.pg.del  { color: var(--accent); }
+.pg.keep { color: var(--good); }
+.pg.uns  { color: var(--warn); }
+.pg.left { color: var(--dim); }
+.pg.done { color: var(--good); }
+.psep { color: var(--line); }
 
 /* focused slice header */
 .focushead { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
 .focushead .focustitle { font-size: 14px; font-weight: 600; }
-
-/* the filters live inside the focused view, collapsed by default */
-details.filt {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
-  padding: 6px 10px; margin-bottom: 12px;
-}
-details.filt > summary {
-  cursor: pointer; list-style: none; user-select: none;
-  color: var(--dim); font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .06em;
-}
-details.filt > summary::before { content: "\25B8\00a0 "; }
-details.filt[open] > summary::before { content: "\25BE\00a0 "; }
-.filtcols { display: flex; gap: 30px; flex-wrap: wrap; margin-top: 8px; }
-.filtcol { min-width: 160px; }
 
 /* staged selection bar at the bottom of a focused slice */
 .selbar {
@@ -345,14 +359,6 @@ details.elsewhere .tname { color: var(--dim); }
 
 .stagetable th, .stagetable td { padding: 2px 4px; font-size: 12px; }
 .stagetable td:first-child { color: var(--dim); }
-
-.flt {
-  display: flex; gap: 7px; align-items: baseline; padding: 2px 0;
-  color: var(--text); font-size: 12.5px; cursor: pointer;
-}
-.flt input { margin: 0; }
-.flt .fltdet { margin-left: auto; color: var(--dim); font-size: 11px;
-  white-space: nowrap; }
 
 .loading { color: var(--dim); padding: 20px 0; }
 

@@ -562,7 +562,10 @@ function rowCls(decision, staged) {
 function leafRow(c, label) {
   const m = age(c.mtime);
   const staged = SEL && SEL.has(c.path);
-  const blocked = !c.decision && c.guard;
+  // A guard-refused row gets a live box only while it carries a 'delete'
+  // mark - the box's one job then is letting that mark be taken back. A
+  // 'keep' or fresh refusal would only ever stage a mark the batch refuses.
+  const blocked = c.guard && c.decision !== "delete";
   return '<div class="trow' + rowCls(c.decision, staged) + '">' +
     markBox(c.path, blocked) +
     '<span class="tname">' +
@@ -613,7 +616,7 @@ function treeHTML(items) {
 // unticked copy stays - which is exactly the decision Phase 4 needs.
 function dupMemberRow(m, keeper) {
   const a = age(m.mtime);
-  const blocked = m.protected && !m.decision;
+  const blocked = m.protected && m.decision !== "delete";
   return '<div class="trow' + rowCls(m.decision, SEL && SEL.has(m.path)) + '">' +
     markBox(m.path, blocked, keeper) +
     '<span class="tname">' +
@@ -697,7 +700,7 @@ function dupFilesSection(dups, terrSet) {
       // The group box must never tick the keeper (first copy shown) - it
       // covers "remove the rest of this set", nothing else.
       const boxable = s.members.slice(1)
-        .filter(m => !(m.protected && !m.decision));
+        .filter(m => !(m.protected && m.decision !== "delete"));
       return '<li><details class="tdir"><summary>' +
         (boxable.length ? grpBox() : grpOff()) +
         '<span class="tdirname">' + names + size(s.bytes_logical) +
@@ -710,7 +713,7 @@ function dupFilesSection(dups, terrSet) {
         "</details></li>";
     }).join("");
     const anyBoxable = list.some(({ s }) =>
-      s.members.slice(1).some(m => !(m.protected && !m.decision)));
+      s.members.slice(1).some(m => !(m.protected && m.decision !== "delete")));
     return '<details class="tdir kind"' + (k === "personal" ? " open" : "") +
       '><summary>' + (anyBoxable ? grpBox() : grpOff()) +
       '<span class="tdirname">' + meta[0] + "</span>" +
@@ -733,7 +736,8 @@ function dupFilesSection(dups, terrSet) {
     "byte-identical (SHA-256). Sets are split by where the copies live - " +
     "only <b>personal</b> sets are yours to prune; tick the copies you " +
     "would remove." +
-    (hidden ? " " + hidden.toLocaleString() + " sets hidden by the filter." : "") +
+    (hidden ? " " + hidden.toLocaleString() +
+      " sets live in other territories." : "") +
     "</p>" + subsections;
 }
 
@@ -748,7 +752,7 @@ function dupTreesSection(t) {
       ? '<span class="tag regen">proven identical</span>'
       : '<span class="tag">' + esc(g.note || "unverified") + "</span>";
     const rows = g.members.map((m, i) => {
-      const blocked = m.protected && !m.decision;
+      const blocked = m.protected && m.decision !== "delete";
       return '<div class="trow' + rowCls(m.decision, SEL && SEL.has(m.path)) + '">' +
       markBox(m.path, blocked, i === 0) +
       '<span class="tname"><a href="#" data-dir="' + m.dir_id + '">' +
@@ -762,7 +766,7 @@ function dupTreesSection(t) {
       revealBtn(m.path) + "</div>";
     }).join("");
     const boxable = g.members.slice(1)
-      .filter(m => !(m.protected && !m.decision));
+      .filter(m => !(m.protected && m.decision !== "delete"));
     return '<li><details class="tdir"><summary>' +
       (boxable.length ? grpBox() : grpOff()) +
       '<span class="tdirname">' + g.n + " copies of the same folder \u2014 " +
@@ -818,11 +822,9 @@ const KIND_META = {
     "Watched already, or never will be?"],
 };
 
-// Sidebar filter state. null means "everything shown"; a Set means only
-// those members are shown. Persisted for the session so re-renders (e.g.
-// after a mark is applied) do not lose the user's place.
+// The cached payload of the eight endpoints Recommended needs. RECO.marks is
+// the decisions map merged over candidates and dup members alike.
 let RECO = null;
-let RECO_KINDS = null, RECO_STATES = null, RECO_TERR = null;
 
 // The focused slice: which "next action" is open in the main pane, or null
 // for the overview board. {t:"tier"|"kind"|"dups"|"trees", v}.
@@ -904,64 +906,6 @@ function recoNav(d, td, hist, plan) {
       (dupFor == null ? " \u00b7 dup analysis never run"
        : dupFor !== SNAP.id ? " \u00b7 dup analysis stale" : "")),
   ].join("");
-}
-
-// The filter checkboxes, embedded in the focused view where they apply rather
-// than living permanently in the sidebar. The delegated change handler
-// rebuilds a filter Set from these full lists, so they must be reachable.
-function recoFilters(d, wantStates, wantKinds, wantTerrs) {
-  const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
-  const box = (attr, val, label, detail, set) =>
-    '<label class="flt"><input type="checkbox" ' + attr + '="' + val + '"' +
-      (!set || set.has(val) ? " checked" : "") +
-      "><span>" + esc(label) + "</span>" +
-      '<span class="fltdet">' + esc(detail || "") + "</span></label>";
-  const kinds = {};
-  for (const c of d.items) (kinds[c.kind] = kinds[c.kind] || []).push(c);
-  const terrs = {};
-  if (d.dup_sets.sets)
-    for (const s of d.dup_sets.sets) {
-      const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
-        .join("+");
-      terrs[t] = (terrs[t] || 0) + 1;
-    }
-  RECO.opts = { states: ["none", "delete", "unsure", "keep"],
-                kinds: Object.keys(kinds), terrs: Object.keys(terrs) };
-  const cols = [];
-  if (wantStates)
-    cols.push('<div class="filtcol"><div class="side-h">decision</div>' +
-      [["none", "suggested"], ["delete", "marked"], ["unsure", "unsure"],
-       ["keep", "keep"]]
-        .map(([v, l]) => box("data-fstate", v, l, "", RECO_STATES)).join("") +
-      "</div>");
-  if (wantKinds)
-    cols.push('<div class="filtcol"><div class="side-h">category</div>' +
-      Object.entries(kinds).sort((a, b) => sum(b[1]) - sum(a[1]))
-        .map(([k, list]) => box("data-fkind", k, (KIND_META[k] || [k])[0],
-          list.length.toLocaleString() + " / " + size(sum(list)),
-          RECO_KINDS)).join("") + "</div>");
-  if (wantTerrs)
-    cols.push('<div class="filtcol"><div class="side-h">dup territory</div>' +
-      Object.entries(terrs).sort((a, b) => b[1] - a[1])
-        .map(([t, n]) => box("data-fterr", t,
-          (DUP_TERRITORY_META[t] || ["mixed: " + t])[0],
-          n.toLocaleString() + " sets", RECO_TERR)).join("") + "</div>");
-  return cols.join("");
-}
-
-// Toggle one filter value. null means "everything"; a smaller Set means
-// only those show. Re-checking every box collapses back to null.
-function recoToggle(which, val, on) {
-  const all = RECO.opts[which];
-  const cur = which === "states" ? RECO_STATES
-            : which === "kinds" ? RECO_KINDS : RECO_TERR;
-  const set = new Set(cur || all);
-  if (on) set.add(val); else set.delete(val);
-  const next = set.size === all.length ? null : set;
-  if (which === "states") RECO_STATES = next;
-  else if (which === "kinds") RECO_KINDS = next;
-  else RECO_TERR = next;
-  drawReco();
 }
 
 // The eight endpoints Recommended needs - the candidate list takes nearly
@@ -1102,8 +1046,8 @@ function drawReco() {
   else if (RECO_FOCUS && RECO_FOCUS.t === "rescan") wireRescan();
   else if (RECO_FOCUS) updateSelBar();
   // Filter boxes, focus links and bar buttons are wired through the delegated
-  // document listeners below (data-fstate / data-focus / data-selact), so a
-  // redraw never needs to re-bind.
+  // document listeners below (data-focus / data-selact / the group boxes),
+  // so a redraw never needs to re-bind.
 }
 
 // ------------------------------------------------------------------ overview
@@ -1111,87 +1055,198 @@ function drawReco() {
 // by the biggest unchecked line rather than a wall of nested trees.
 
 function overviewBody() {
-  const { d, td, hist } = RECO;
+  const { d, td, hist, plan } = RECO;
   const sum = xs => xs.reduce((a, c) => a + c.bytes_disk, 0);
+  // A row "can be marked" when the reclaim guard would let a batch touch it.
+  // Guarded rows are report-only, so a 400-item kind must not read as 400
+  // pending decisions when everything in it sits under a protected root.
   const tally = items => {
-    const t = {};
-    for (const c of items)
-      if (c.decision) t[c.decision] = (t[c.decision] || 0) + 1;
-    const parts = [];
-    if (t.delete) parts.push(t.delete.toLocaleString() + " marked");
-    if (t.keep) parts.push(t.keep.toLocaleString() + " kept");
-    if (t.unsure) parts.push(t.unsure.toLocaleString() + " unsure");
-    return parts.join(" \u00b7 ");
+    const t = { work: 0, del: 0, keep: 0, uns: 0, left: 0 };
+    for (const c of items) {
+      if (!c.guard) t.work++;
+      if (c.decision === "delete") t.del++;
+      else if (c.decision === "keep") t.keep++;
+      else if (c.decision === "unsure") t.uns++;
+      else if (!c.guard) t.left++;
+    }
+    return t;
   };
-  const brow = (label, n, bytes, status, focus, sub, note) =>
-    '<tr class="brow' + (sub ? " sub" : "") + '" data-focus="' + focus + '">' +
+  const sep = '<span class="psep"> \u00b7 </span>';
+  // The coloured "how far along" cell: what is marked for the Bin, what is
+  // kept, and how much is still nobody's call.
+  const prog = t => {
+    const p = [];
+    if (t.del)  p.push('<b class="pg del">'  + t.del.toLocaleString()  + " marked</b>");
+    if (t.keep) p.push('<b class="pg keep">' + t.keep.toLocaleString() + " kept</b>");
+    if (t.uns)  p.push('<b class="pg uns">'  + t.uns.toLocaleString()  + " unsure</b>");
+    if (t.left) p.push('<b class="pg left">' + t.left.toLocaleString() + " to review</b>");
+    else if (p.length) p.push('<b class="pg done">done</b>');
+    return p.join(sep);
+  };
+  const brow = (label, n, work, bytes, status, focus, sub, note) =>
+    '<tr class="brow' + (sub ? " sub" : "") + '"' +
+      (focus ? ' data-focus="' + focus + '"' : "") + ">" +
     '<td class="name">' + esc(label) +
       (note ? '<div class="path">' + esc(note) + "</div>" : "") + "</td>" +
     '<td class="num">' + n + "</td>" +
+    '<td class="num">' + (work == null
+        ? '<span class="pg left">\u2014</span>' : work.toLocaleString()) +
+    "</td>" +
     '<td class="num">' + (bytes ? size(bytes) : "") + "</td>" +
-    '<td class="num dim">' + esc(status || "") + "</td>" +
-    '<td class="num">&#8594;</td></tr>';
+    '<td class="num st">' + status + "</td>" +
+    '<td class="num">' + (focus ? "&#8594;" : "") + "</td></tr>";
+  // A section's label row: separates suggestions from state without becoming
+  // a clickable row itself.
+  const secrow = (label, note) =>
+    '<tr class="bsec"><td class="name">' + esc(label) +
+      (note ? '<span class="bnote"> - ' + esc(note) + "</span>" : "") +
+      '</td><td colspan="5"></td></tr>';
 
   let rows = "";
+  const dead = [];  // kinds where every row is guarded - report-only lists
   for (const [tier, label, note] of [
       ["A", "Safe to remove", "empty, regenerable or already deleted once"],
       ["B", "Decide", "big, dormant or redundant - review before it goes"]]) {
-    const items = d.items.filter(c => c.tier === tier);
-    if (!items.length) continue;
-    rows += brow(label, items.length.toLocaleString(), sum(items),
-                 tally(items), "tier:" + tier, false, note);
+    // The Bin's own kind sits under "Your marks" instead - emptying it is a
+    // pipeline step, not a suggestion, and the guard refuses the rows anyway.
+    const items = d.items.filter(c =>
+      c.tier === tier && c.kind !== "recycle_bin");
     const kinds = {};
     for (const c of items) (kinds[c.kind] = kinds[c.kind] || []).push(c);
-    for (const [k, list] of Object.entries(kinds)
+    const live = [];
+    for (const kv of Object.entries(kinds)
         .sort((a, b) => sum(b[1]) - sum(a[1])))
-      // The Bin's own row goes straight to the send/empty step - recycling it
-      // would just move it inside itself, which the guard refuses anyway.
+      (kv[1].some(c => !c.guard) ? live : dead).push(kv);
+    if (!live.length) continue;
+    const flat = live.reduce((a, [, l]) => a.concat(l), []);
+    const t = tally(flat);
+    rows += brow(label, flat.length.toLocaleString(), t.work, sum(flat),
+                 prog(t), "tier:" + tier, false, note);
+    for (const [k, list] of live) {
+      const tk = tally(list);
       rows += brow((KIND_META[k] || [k])[0], list.length.toLocaleString(),
-                   sum(list), tally(list),
-                   k === "recycle_bin" ? "bin" : "kind:" + k, true);
+                   tk.work, sum(list), prog(tk), "kind:" + k, true);
+    }
   }
+
+  // Duplicates are counted per set: the tickable unit is a copy other than
+  // the keeper, and "to review" counts sets nobody has touched.
+  const dupProg = (g, unit) =>
+    (g.marked
+      ? '<b class="pg del">' + g.marked.toLocaleString() + " marked</b>" + sep
+      : "") +
+    (g.open
+      ? '<b class="pg left">' + g.open.toLocaleString() + " " + unit +
+        " to review</b>"
+      : '<b class="pg done">all reviewed</b>');
+  const dupTally = members => ({
+    marked: members.filter(m => m.decision === "delete").length,
+    work: members.slice(1)
+      .filter(m => !(m.protected && m.decision !== "delete")).length,
+    open: members.every(m => !m.decision) ? 1 : 0,
+  });
   if (d.dup_sets.sets && d.dup_sets.sets.length) {
     const groups = {};
     for (const s of d.dup_sets.sets) {
       const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
         .join("+");
-      const g = groups[t] = groups[t] || { n: 0, rec: 0, marked: 0 };
+      const g = groups[t] = groups[t] ||
+        { n: 0, rec: 0, marked: 0, work: 0, open: 0 };
       g.n++;
       g.rec += Math.max(0, new Set(s.members.map(m => m.ino)).size - 1) *
         s.bytes_logical;
-      g.marked += s.members.filter(m => m.decision === "delete").length;
+      const dt = dupTally(s.members);
+      g.marked += dt.marked; g.work += dt.work; g.open += dt.open;
     }
-    const all = { n: 0, rec: 0, marked: 0 };
-    for (const g of Object.values(groups)) {
-      all.n += g.n; all.rec += g.rec; all.marked += g.marked;
-    }
-    rows += brow("Duplicate files", all.n.toLocaleString() + " sets", all.rec,
-      all.marked ? all.marked.toLocaleString() + " copies marked" : "", "dups",
-      false, "byte-identical sets - the size is what keeping one copy frees");
+    const all = { n: 0, rec: 0, marked: 0, work: 0, open: 0 };
+    for (const g of Object.values(groups))
+      for (const k in all) all[k] += g[k];
+    rows += brow("Duplicate files", all.n.toLocaleString() + " sets", all.work,
+      all.rec, dupProg(all, "sets"), "dups", false,
+      "byte-identical sets - the size is what keeping one copy frees");
     for (const [t, g] of Object.entries(groups)
         .sort((a, b) => b[1].rec - a[1].rec))
       rows += brow((DUP_TERRITORY_META[t] || ["mixed: " + t])[0],
-        g.n.toLocaleString() + " sets", g.rec,
-        g.marked ? g.marked.toLocaleString() + " marked" : "",
-        "dups:" + t, true);
+        g.n.toLocaleString() + " sets", g.work, g.rec,
+        dupProg(g, "sets"), "dups:" + t, true);
   }
   if (td.groups && td.groups.length) {
-    const rec = td.groups.reduce((a, g) => a + g.reclaimable, 0);
-    const mk = td.groups.reduce((a, g) =>
-      a + g.members.filter(m => m.decision === "delete").length, 0);
-    rows += brow("Duplicate folders",
-      td.groups.length.toLocaleString() + " groups", rec,
-      mk ? mk.toLocaleString() + " marked" : "", "trees", false,
+    const g2 = { n: td.groups.length, rec: 0, marked: 0, work: 0, open: 0 };
+    for (const g of td.groups) {
+      g2.rec += g.reclaimable;
+      const dt = dupTally(g.members);
+      g2.marked += dt.marked; g2.work += dt.work; g2.open += dt.open;
+    }
+    rows += brow("Duplicate folders", g2.n.toLocaleString() + " groups",
+      g2.work, g2.rec, dupProg(g2, "groups"), "trees", false,
       "whole folders that are copies of each other");
   }
+
+  // The pipeline's own state is a different thing from a suggestion: where
+  // the marks stand, and what the Bin is holding until it is emptied.
+  let nKeep = 0, nUnsure = 0;
+  for (const c of Object.values(RECO.marks || {})) {
+    if (c === "keep") nKeep++;
+    else if (c === "unsure") nUnsure++;
+  }
+  const nRef = (plan.blocked || []).length;
+  rows += secrow("Your marks",
+    "decisions so far, and the Bin they feed");
+  rows += brow("Marked for the Recycle Bin",
+    plan.entries.length.toLocaleString(), null, plan.total_disk,
+    plan.entries.length
+      ? (nRef
+          ? '<b class="pg uns">' + nRef.toLocaleString() +
+            " refused by the guard</b>" + sep
+          : "") +
+        '<b class="pg del">' + plan.actionable.toLocaleString() +
+        " ready to send</b>"
+      : '<b class="pg left">nothing marked</b>',
+    "bin", true);
+  rows += brow("Marked to keep", (nKeep + nUnsure).toLocaleString(), null, 0,
+    (nKeep + nUnsure)
+      ? (nKeep
+          ? '<b class="pg keep">' + nKeep.toLocaleString() + " kept</b>" : "") +
+        (nKeep && nUnsure ? sep : "") +
+        (nUnsure
+          ? '<b class="pg uns">' + nUnsure.toLocaleString() + " unsure</b>"
+          : "")
+      : '<b class="pg left">nothing kept yet</b>',
+    "kept", true);
+  rows += brow("The Recycle Bin itself",
+    plan.bin.files.toLocaleString(), null, plan.bin.bytes,
+    plan.bin.bytes
+      ? '<b class="pg left">still on disk - emptied from step 2</b>'
+      : '<b class="pg done">empty</b>',
+    "bin", true);
+
+  // Kinds where the guard refuses every row are not suggestions at all -
+  // they stay visible so the board is complete, each naming its real owner.
+  if (dead.length) {
+    const HANDLED_BY = {
+      winupdate: "Disk Cleanup or Storage Sense clears it",
+      wer: "Disk Cleanup or Storage Sense clears them",
+      appdata_cache: "in use by a running app - close it to mark these",
+    };
+    rows += secrow("Handled elsewhere",
+      "nothing here can be marked - each row names what deals with it");
+    for (const [k, list] of dead)
+      rows += brow((KIND_META[k] || [k])[0], list.length.toLocaleString(),
+        null, sum(list),
+        '<b class="pg left">' +
+          esc(HANDLED_BY[k] || "every row sits under a protected path") +
+          "</b>",
+        "kind:" + k, true);
+  }
+
   // Upkeep, not review work - but a stale analysis deserves a board line,
   // since the duplicate rows above quietly mean "as of the last run".
   const dupFor = d.dup_sets.computed_for;
   if (dupFor == null || dupFor !== SNAP.id)
     rows += brow("Duplicate analysis out of date",
-      dupFor == null ? "never run" : "ran on snapshot " + dupFor, "",
-      "re-run from Snapshot & rescans", "rescan", false,
-      "the duplicate lists above may be behind");
+      dupFor == null ? "never run" : "ran on snapshot " + dupFor, null, "",
+      '<b class="pg uns">re-run from Snapshot &amp; rescans</b>', "rescan",
+      false, "the duplicate lists above may be behind");
   const pendingApps = hist.apps.filter(a => !a.done_at);
   if (pendingApps.length)
     rows += '<tr class="brow" data-tab="history"><td class="name">' +
@@ -1199,16 +1254,20 @@ function overviewBody() {
       '<div class="path">removal runs through Windows - confirm on ' +
       "History</div></td>" +
       '<td class="num">' + pendingApps.length + "</td>" +
+      '<td class="num"><span class="pg left">\u2014</span></td>' +
       '<td class="num">' +
         size(pendingApps.reduce((a, x) => a + (x.bytes || 0), 0)) + "</td>" +
-      '<td class="num dim">pending</td><td class="num">&#8594;</td></tr>';
+      '<td class="num st"><b class="pg uns">pending</b></td>' +
+      '<td class="num">&#8594;</td></tr>';
   return '<h2 class="viewtitle">What needs a look</h2>' +
     '<p class="hint">Everything the scan flagged that might be worth a ' +
-    "second look, grouped by what it is. Open a row to review it: ticking " +
-    "an item only stages a mark, and nothing moves until the marked batch " +
-    'is sent from "Marked for the Recycle Bin" on the left.</p>' +
-    '<table><thead><tr><th>suggestion</th><th class="num">items</th>' +
-    '<th class="num">on disk</th><th class="num">status</th>' +
+    "second look, grouped by what it is. 'can mark' counts the rows a batch " +
+    "could actually touch. Open a row to review it: ticking an item only " +
+    "stages a mark, and nothing moves until the marked batch is sent from " +
+    '"Marked for the Recycle Bin" on the left.</p>' +
+    '<table><thead><tr><th>area</th><th class="num">items</th>' +
+    '<th class="num">can mark</th><th class="num">on disk</th>' +
+    '<th class="num">progress</th>' +
     '<th class="num"></th></tr></thead><tbody>' + rows + "</tbody></table>";
 }
 
@@ -1241,21 +1300,18 @@ function kindGroups(items, flat) {
 function focusBody() {
   const { d, td } = RECO;
   const f = RECO_FOCUS;
-  const shownState = c => !RECO_STATES || RECO_STATES.has(c.decision || "none");
   const terrOf = s =>
     [...new Set(s.members.map(m => territoryOf(m.path)))].sort().join("+");
-  // A row is markable when the guard does not refuse it; a refused row that
-  // already carries a decision keeps its box so it can still be unmarked.
+  // A row is markable when the guard does not refuse it. A refused row that
+  // already carries a decision stays listed so the decision stays visible,
+  // but only a 'delete' mark keeps a live box - see leafRow.
   const markable = c => !c.guard || !!c.decision;
 
-  let title = "", sub = "", slice = [], elsewhere = [],
-      wantStates = false, wantKinds = false, wantTerrs = false;
+  let title = "", sub = "", slice = [], elsewhere = [];
   const build = () => {
     if (f.t === "tier" || f.t === "kind") {
       const items = d.items.filter(c =>
-        (f.t === "kind" ? c.kind === f.v : c.tier === f.v) &&
-        shownState(c) &&
-        (f.t === "kind" || !RECO_KINDS || RECO_KINDS.has(c.kind)));
+        f.t === "kind" ? c.kind === f.v : c.tier === f.v);
       const meta = f.t === "kind" ? (KIND_META[f.v] || [f.v, ""])
         : f.v === "A"
           ? ["Safe to remove",
@@ -1271,11 +1327,10 @@ function focusBody() {
       elsewhere = items.filter(c => !markable(c));
       slice = act.map(c => ({ p: c.path, b: c.bytes_disk, dec: c.decision,
         tier: c.tier }));
-      wantStates = true; wantKinds = f.t === "tier";
       return kindGroups(act, f.t === "kind") + elsewhereSection(elsewhere);
     }
     if (f.t === "dups") {
-      const terrSet = f.v ? new Set([f.v]) : RECO_TERR;
+      const terrSet = f.v ? new Set([f.v]) : null;
       const meta = f.v ? (DUP_TERRITORY_META[f.v] || ["Duplicates", ""])
         : ["Duplicate files",
            "Every copy in a set is byte-identical (SHA-256). Pick the keeper " +
@@ -1286,9 +1341,8 @@ function focusBody() {
         if (terrSet && !terrSet.has(terrOf(s))) continue;
         for (const m of s.members)
           slice.push({ p: m.path, b: m.bytes_disk || m.bytes_logical,
-            dec: m.decision, blocked: !!(m.protected && !m.decision) });
+            dec: m.decision, blocked: !!(m.protected && m.decision !== "delete") });
       }
-      wantTerrs = !f.v;
       return dupFilesSection(d.dup_sets, terrSet);
     }
     if (f.t === "trees") {
@@ -1298,7 +1352,7 @@ function focusBody() {
       for (const g of td.groups || [])
         for (const m of g.members)
           slice.push({ p: m.path, b: m.bytes_disk, dec: m.decision,
-                       blocked: !!(m.protected && !m.decision) });
+                       blocked: !!(m.protected && m.decision !== "delete") });
       return dupTreesSection(td);
     }
     if (f.t === "bin") {
@@ -1327,9 +1381,8 @@ function focusBody() {
   };
 
   // The slice's markable paths are known before the content is rendered,
-  // because SEL decides the checked state of every box inside it. preSlice
-  // ignores the display filters so staged ticks survive a narrowed view, and
-  // guard-refused rows are left out - they get no box to tick.
+  // because SEL decides the checked state of every box inside it.
+  // Guard-refused rows are left out - they get no box to tick.
   const preSlice = [];
   if (f.t === "tier" || f.t === "kind")
     for (const c of d.items)
@@ -1342,38 +1395,37 @@ function focusBody() {
       if (tset && !tset.has(terrOf(s))) continue;
       for (const m of s.members)
         preSlice.push({ p: m.path, b: m.bytes_disk || m.bytes_logical,
-          dec: m.decision, blocked: !!(m.protected && !m.decision) });
+          dec: m.decision, blocked: !!(m.protected && m.decision !== "delete") });
     }
   } else if (f.t === "trees")
     for (const g of td.groups || [])
       for (const m of g.members)
         preSlice.push({ p: m.path, b: m.bytes_disk, dec: m.decision,
-                        blocked: !!(m.protected && !m.decision) });
+                        blocked: !!(m.protected && m.decision !== "delete") });
   const hasMarks = MARKABLE.has(f.t);
   if (hasMarks) initSel(preSlice);
   const content = build();
   if (content === null) { RECO_FOCUS = null; return overviewBody(); }
 
   const totalBytes = slice.reduce((a, r) => a + r.b, 0);
-  const fInner = recoFilters(d, wantStates, wantKinds, wantTerrs);
   return '<div class="focushead">' +
       '<a href="#" data-focus="">&#8249; overview</a>' +
       '<span class="focustitle">' + esc(title) + "</span>" +
       (hasMarks
         ? '<span class="tstats">' + slice.length.toLocaleString() +
-          " rows \u00b7 " + size(totalBytes) + "</span>"
+          " rows \u00b7 " + size(totalBytes) + "</span>" +
+          (elsewhere.length
+            ? '<span class="tstats">' + elsewhere.length.toLocaleString() +
+              " handled elsewhere</span>"
+            : "")
         : "") +
       "</div>" +
     '<p class="hint">' + esc(sub) + "</p>" +
-    (fInner
-      ? '<details class="filt"><summary>narrow this list</summary>' +
-        '<div class="filtcols">' + fInner + "</div></details>"
-      : "") +
     (hasMarks
       ? '<div class="controls"><button id="expandall">expand all</button>' +
         '<button id="collapseall">collapse all</button></div>'
       : "") +
-    (content || '<p class="hint">Nothing matches those filters.</p>') +
+    (content || '<p class="hint">Nothing here.</p>') +
     (hasMarks ? '<div class="selbar" id="selbar"></div>' : "");
 }
 
@@ -1461,7 +1513,7 @@ function syncStaged(b) {
 }
 
 // Rebuild the bottom bar's counts from the rendered boxes - the bar reports
-// (and apply acts on) what is shown, so a narrowed filter narrows both.
+// (and apply acts on) what is shown.
 function updateSelBar() {
   const bar = document.getElementById("selbar");
   if (!bar) return;
@@ -1541,7 +1593,7 @@ function selAction(act) {
     // first shown in each set. Positional, not wisdom - adjust after.
     let groups;
     if (RECO_FOCUS.t === "dups") {
-      const terrSet = RECO_FOCUS.v ? new Set([RECO_FOCUS.v]) : RECO_TERR;
+      const terrSet = RECO_FOCUS.v ? new Set([RECO_FOCUS.v]) : null;
       groups = (RECO.d.dup_sets.sets || [])
         .filter(s => !terrSet || terrSet.has(
           [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
@@ -1568,8 +1620,7 @@ function selAction(act) {
 
 // Commit the visible selection as one batch: checked rows become 'delete',
 // 'keep', or have their mark cleared ('none' deletes the decision row), and
-// a ticked-off row that was marked is unmarked to 'unsure'. Rows hidden by
-// the filter are not touched.
+// a ticked-off row that was marked is unmarked to 'unsure'.
 async function applyMarks(choice) {
   const boxes = [...view.querySelectorAll("input[data-mark]")];
   const pairs = [];
@@ -1880,7 +1931,9 @@ function binBody() {
         '<span class="path">' + d.bin.files.toLocaleString() + " items, " +
         size(d.bin.bytes) + " at the last scan \u2014 this is the real " +
         "system Recycle Bin, and emptying it is permanent. It is " +
-        "rescanned afterwards on its own.</span></div>") +
+        "rescanned afterwards on its own.</span>" +
+        ' <a href="#" data-reveal="C:\\$Recycle.Bin">look inside it ' +
+        "in Explorer</a></div>") +
     '<p class="hint">After a batch, the folders that changed are rescanned ' +
     'on their own - progress is under ' +
     '<a href="#" data-focus="rescan">Snapshot &amp; rescans</a>. Nothing ' +
@@ -2465,19 +2518,7 @@ document.addEventListener("click", e => {
 // commits the whole visible selection as one batch of decisions.
 document.addEventListener("change", e => {
   const mark = e.target.closest("input[data-mark]");
-  if (!mark) {
-    // Filter boxes inside the Recommended focus view.
-    if (!RECO || TAB !== "recommended" || !RECO.opts) return;
-    const box = e.target.closest(
-      "input[data-fstate],input[data-fkind],input[data-fterr]");
-    if (!box) return;
-    const which = box.dataset.fstate !== undefined ? "states"
-      : box.dataset.fkind !== undefined ? "kinds" : "terrs";
-    recoToggle(which,
-      box.dataset.fstate || box.dataset.fkind || box.dataset.fterr,
-      box.checked);
-    return;
-  }
+  if (!mark) return;
   if (!SEL) return;  // no staged slice active - nothing should have a box
   const p = mark.dataset.mark;
   if (mark.checked) SEL.add(p); else SEL.delete(p);

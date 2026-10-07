@@ -113,6 +113,7 @@ function assertRendered(name, mustContain) {
     ["recommended", ["areas", "progress", "Overview",
                      "Marked for the Recycle Bin", "Marked to keep",
                      "Snapshot &amp; rescans", "Safe to remove", "Decide",
+                     "can mark", "Your marks", "The Recycle Bin itself",
                      'data-focus=', "What needs a look"]],
     ["folders", ["data-dir=", "on disk here", "<table"]],
     ["types", ["By extension", "<table", "video"]],
