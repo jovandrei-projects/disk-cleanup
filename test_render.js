@@ -159,7 +159,9 @@ function assertRendered(name, mustContain) {
       ["Send the marked items to the Recycle Bin",
        "Empty the Windows Recycle Bin",
        "id=\"runbatch\"", "id=\"emptybin\"",
-       "id=\"pipestatus\"", "id=\"oplog\"", "stepc"]);
+       "id=\"pipestatus\"", "id=\"oplog\"", "stepc",
+       // sortable header + the covered-mark tree under a marked folder
+       "data-binsort", "goes with its parent"]);
     app.setFocus({ t: "rescan" });
     app.drawReco();
     assertRendered("recommended focus: rescan",
@@ -168,7 +170,7 @@ function assertRendered(name, mustContain) {
     app.setFocus({ t: "kept" });
     app.drawReco();
     assertRendered("recommended focus: kept",
-      ["Keep</h3>", "Unsure</h3>"]);
+      ["Marked to keep</h3>", "Marked unsure</h3>"]);
     app.setFocus(null);
     app.drawReco();
     check("recommended overview returns",

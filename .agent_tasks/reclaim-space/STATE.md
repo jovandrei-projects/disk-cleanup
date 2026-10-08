@@ -90,6 +90,63 @@ Order set by the user 2026-09-28: bundled removals first, then granular.
 
 ## Where it stopped
 
+2026-10-07 (UX pass + self-test incident): sixth feedback round answered -
+report-only dup sets no longer read "to review", the marked list is sorted
+by folder coverage with sortable columns, nested marks no longer
+double-count, and state names are consistent. Then a real incident, fully
+repaired; read it before running `--self-test` casually.
+
+**UX changes** (`web/app.js`, `web/style.css`, `test_render.js`):
+- Board: a dup set/group now counts "to review" only if it has a
+  personal-territory member AND an unticked boxable copy; everything else
+  shows "N sets report-only" (dim) - 2,174 sets that were phantoming as
+  work now say so. `dupTally` returns `reviewable`/`ro` alongside
+  `marked`/`work`/`open`.
+- Bin slice: `binTree()` nests each mark under its covering marked dir
+  (nearest ancestor wins). Covered marks render dimmed + indented
+  (`tr.covsub`) with "goes with its parent"; parents show "+N marks
+  inside". "would free on disk" and the board/nav figures use the unique
+  total (101 GB), not the 162.8 GB sum that double-counted covered marks.
+- Sortable columns on the marked table: `data-binsort` headers
+  (path/bytes/files/mtime), `BINSORT` state, thead+tbody repaint in place
+  so the poller's `data-row` status painting survives.
+- Naming: progress table rows are now "suggested / marked for the Recycle
+  Bin / unsure / marked to keep" matching the sidebar; kept-slice headers
+  are "Marked to keep" / "Marked unsure"; progress chips say "for the
+  Bin" / "to keep" instead of bare "marked"/"kept"; selbar button "mark
+  checked to keep".
+
+**Incident - self-test ran the real batch, repaired in full:**
+`reclaim.py --self-test` marks a scratch file and calls `run_batch`, which
+was unscoped - it recycled the real 95-mark batch (manifest
+batch-20261007-204733; 75 sent to bin, 20 covered, 1 recycle-failed on
+WhatsApp `EBWebView\Default\Cache`, never moved). `restore_manifest` then
+ran in manifest order: individually-binned children restored before their
+marked parents and recreated those paths, so 13 parent restores failed
+"target already exists" with their $R still in the bin.
+`repair_restore.py` (kept in this dir) moved each partial dir aside,
+restored the $R, merged the partial subtree back in - all verified: 0
+unrestored bin entries, spot-checked files intact (the 4.3 GB `.nca\02`,
+the 674 MB save file, the AVD image). Two empty `.__partial__` dir shells
+under `OneDrive\Nintendo` refused rmdir (OneDrive-tag weirdness, error
+123/5); moved to `%TEMP%\partial-shells` and removed by clearing the
+READONLY bit. `remark.py` (kept) re-applied the 94 consumed delete marks
+from the manifest with their original `decided_at` - decisions are back
+to 95 delete / 656 keep, `GET /api/reclaim` shows 95 actionable / 0
+blocked / 0 pruned.
+
+**Fixes in `reclaim.py`:**
+- `propose(db, sid, only=None)` and `run_batch(..., only=None)` take an
+  exact-path scope; `self_test` now passes `only={fa}` and asserts the
+  batch touched only the scratch file. An unscoped test batch cannot
+  sweep real marks again.
+- `restore_manifest` sorts real bin entries parents-first (fewest `\`,
+  then shorter path) and evaluates covered entries last - the
+  target-already-exists failure mode is gone at the source.
+
+Gates: `node --check`, `py_compile`, `test_render.js`,
+`reclaim.py --self-test` all green.
+
 2026-10-07 (marking pass): the user asked for keep/trash marks on every
 Recommended item, applied with their judgement calls. 752 decisions written
 via `/api/decide` (95 delete / 656 keep / 1 stale test row cleared). The

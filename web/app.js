@@ -856,10 +856,18 @@ function recoProgress(d, hist, plan) {
   const row = (label, n, bytes) =>
     '<tr><td>' + label + '</td><td class="num">' + n.toLocaleString() +
     '</td><td class="num">' + (bytes ? size(bytes) : "") + "</td></tr>";
+  // State names match the sidebar areas exactly, so "marked to keep" is
+  // never shortened to just "keep" in the summary.
+  const STATE_LABEL = {
+    suggested: "suggested",
+    delete: "marked for the Recycle Bin",
+    unsure: "unsure",
+    keep: "marked to keep",
+  };
   const rows = [];
   for (const s of ["suggested", "delete", "unsure", "keep"])
-    if (byState[s]) rows.push(row(
-      s === "delete" ? "marked" : s, byState[s].n, byState[s].bytes));
+    if (byState[s])
+      rows.push(row(STATE_LABEL[s], byState[s].n, byState[s].bytes));
   if (plan.bin.bytes)
     rows.push(row("in the Recycle Bin", plan.bin.files, plan.bin.bytes));
   if (freedBytes)
@@ -891,13 +899,13 @@ function recoNav(d, td, hist, plan) {
     btn("bin", "Marked for the Recycle Bin",
       (plan.entries.length
         ? plan.entries.length.toLocaleString() + " marked \u00b7 " +
-          size(plan.total_disk) +
+          size(binTree(plan.entries).unique) +
           " \u00b7 the Recycle Bin holds " + size(plan.bin.bytes)
         : "nothing marked yet") +
       " - review, send, empty"),
     btn("kept", "Marked to keep",
       (nKeep + nUnsure
-        ? nKeep.toLocaleString() + " keep \u00b7 " +
+        ? nKeep.toLocaleString() + " marked to keep \u00b7 " +
           nUnsure.toLocaleString() + " unsure"
         : "no keep marks yet") + " - your decisions so far"),
     btn("rescan", "Snapshot & rescans",
@@ -1076,8 +1084,8 @@ function overviewBody() {
   // kept, and how much is still nobody's call.
   const prog = t => {
     const p = [];
-    if (t.del)  p.push('<b class="pg del">'  + t.del.toLocaleString()  + " marked</b>");
-    if (t.keep) p.push('<b class="pg keep">' + t.keep.toLocaleString() + " kept</b>");
+    if (t.del)  p.push('<b class="pg del">'  + t.del.toLocaleString()  + " for the Bin</b>");
+    if (t.keep) p.push('<b class="pg keep">' + t.keep.toLocaleString() + " to keep</b>");
     if (t.uns)  p.push('<b class="pg uns">'  + t.uns.toLocaleString()  + " unsure</b>");
     if (t.left) p.push('<b class="pg left">' + t.left.toLocaleString() + " to review</b>");
     else if (p.length) p.push('<b class="pg done">done</b>');
@@ -1130,35 +1138,56 @@ function overviewBody() {
   }
 
   // Duplicates are counted per set: the tickable unit is a copy other than
-  // the keeper, and "to review" counts sets nobody has touched.
-  const dupProg = (g, unit) =>
-    (g.marked
-      ? '<b class="pg del">' + g.marked.toLocaleString() + " marked</b>" + sep
-      : "") +
-    (g.open
-      ? '<b class="pg left">' + g.open.toLocaleString() + " " + unit +
-        " to review</b>"
-      : '<b class="pg done">all reviewed</b>');
-  const dupTally = members => ({
-    marked: members.filter(m => m.decision === "delete").length,
-    work: members.slice(1)
-      .filter(m => !(m.protected && m.decision !== "delete")).length,
-    open: members.every(m => !m.decision) ? 1 : 0,
-  });
+  // the keeper, and "to review" counts reviewable sets nobody has touched.
+  // Only a set that includes a personal-territory copy is yours to prune -
+  // sets living entirely in AppData or system areas are report-only: they
+  // stay listed under their territory row, but nothing there awaits a
+  // decision, so they must not read as pending work.
+  const dupProg = (g, unit) => {
+    const p = [];
+    const u = n => n === 1 ? unit.replace(/s$/, "") : unit;
+    if (g.marked)
+      p.push('<b class="pg del">' + g.marked.toLocaleString() + " for the Bin</b>");
+    if (g.open)
+      p.push('<b class="pg left">' + g.open.toLocaleString() + " " + u(g.open) +
+        " to review</b>");
+    else if (g.reviewable)
+      p.push('<b class="pg done">all reviewed</b>');
+    if (g.ro)
+      p.push('<b class="pg left">' + g.ro.toLocaleString() + " " + u(g.ro) +
+        " report-only</b>");
+    if (!p.length) p.push('<b class="pg left">report only</b>');
+    return p.join(sep);
+  };
+  const dupTally = members => {
+    const reviewable = members.slice(1).some(m =>
+        !(m.protected && m.decision !== "delete")) &&
+      members.some(m => territoryOf(m.path) === "personal");
+    return {
+      marked: members.filter(m => m.decision === "delete").length,
+      work: members.slice(1)
+        .filter(m => !(m.protected && m.decision !== "delete")).length,
+      open: reviewable && members.every(m => !m.decision) ? 1 : 0,
+      reviewable: reviewable ? 1 : 0,
+      ro: reviewable ? 0 : 1,
+    };
+  };
   if (d.dup_sets.sets && d.dup_sets.sets.length) {
     const groups = {};
     for (const s of d.dup_sets.sets) {
       const t = [...new Set(s.members.map(m => territoryOf(m.path)))].sort()
         .join("+");
       const g = groups[t] = groups[t] ||
-        { n: 0, rec: 0, marked: 0, work: 0, open: 0 };
+        { n: 0, rec: 0, marked: 0, work: 0, open: 0, reviewable: 0, ro: 0 };
       g.n++;
       g.rec += Math.max(0, new Set(s.members.map(m => m.ino)).size - 1) *
         s.bytes_logical;
       const dt = dupTally(s.members);
       g.marked += dt.marked; g.work += dt.work; g.open += dt.open;
+      g.reviewable += dt.reviewable; g.ro += dt.ro;
     }
-    const all = { n: 0, rec: 0, marked: 0, work: 0, open: 0 };
+    const all = { n: 0, rec: 0, marked: 0, work: 0, open: 0,
+                  reviewable: 0, ro: 0 };
     for (const g of Object.values(groups))
       for (const k in all) all[k] += g[k];
     rows += brow("Duplicate files", all.n.toLocaleString() + " sets", all.work,
@@ -1171,11 +1200,13 @@ function overviewBody() {
         dupProg(g, "sets"), "dups:" + t, true);
   }
   if (td.groups && td.groups.length) {
-    const g2 = { n: td.groups.length, rec: 0, marked: 0, work: 0, open: 0 };
+    const g2 = { n: td.groups.length, rec: 0, marked: 0, work: 0, open: 0,
+                 reviewable: 0, ro: 0 };
     for (const g of td.groups) {
       g2.rec += g.reclaimable;
       const dt = dupTally(g.members);
       g2.marked += dt.marked; g2.work += dt.work; g2.open += dt.open;
+      g2.reviewable += dt.reviewable; g2.ro += dt.ro;
     }
     rows += brow("Duplicate folders", g2.n.toLocaleString() + " groups",
       g2.work, g2.rec, dupProg(g2, "groups"), "trees", false,
@@ -1190,10 +1221,12 @@ function overviewBody() {
     else if (c === "unsure") nUnsure++;
   }
   const nRef = (plan.blocked || []).length;
+  // Bytes count once: marks inside a marked folder ride along with it.
+  const uniqueBin = binTree(plan.entries).unique;
   rows += secrow("Your marks",
     "decisions so far, and the Bin they feed");
   rows += brow("Marked for the Recycle Bin",
-    plan.entries.length.toLocaleString(), null, plan.total_disk,
+    plan.entries.length.toLocaleString(), null, uniqueBin,
     plan.entries.length
       ? (nRef
           ? '<b class="pg uns">' + nRef.toLocaleString() +
@@ -1552,7 +1585,7 @@ function updateSelBar() {
     '<button data-selact="unmark"' + (clearable ? "" : " disabled") +
       ">clear marks on checked</button>" +
     '<button data-selact="keep"' + (n ? "" : " disabled") +
-      ' title="mark the ticked rows as keep">mark checked as keep</button>' +
+      ' title="mark the ticked rows to keep">mark checked to keep</button>' +
     '<button class="primary" data-selact="del"' + (diff ? "" : " disabled") +
       ">" + applyLabel + "</button>" +
     (marked
@@ -1829,6 +1862,103 @@ function stepCard(id, state, title, body) {
     body + "</div>";
 }
 
+// A mark nested inside a marked folder is implied - the folder's trip to
+// the Bin takes it along. Covered marks stay listed (dimmed, indented under
+// their covering mark) so the audit trail is complete, but they are not
+// separate moves and their bytes must not be counted twice.
+let BINSORT = { k: "bytes", desc: true };
+let BIN_TREE = null;
+
+function binTree(entries) {
+  const dirMarks = entries.filter(e => e.src === "dir")
+    .map(e => e.path.toLowerCase());
+  const nodeFor = new Map();
+  for (const e of entries) nodeFor.set(e.path.toLowerCase(), { e, kids: [] });
+  const roots = [];
+  for (const e of entries) {
+    const p = e.path.toLowerCase();
+    // nearest marked folder that strictly contains this entry
+    let best = null;
+    for (const dp of dirMarks)
+      if (dp !== p && p.startsWith(dp + "\\") &&
+          (!best || dp.length > best.length))
+        best = dp;
+    const n = nodeFor.get(p);
+    if (best && nodeFor.has(best)) nodeFor.get(best).kids.push(n);
+    else roots.push(n);
+  }
+  return {
+    roots,
+    covered: entries.length - roots.length,
+    unique: roots.reduce((a, n) => a + n.e.bytes_disk, 0),
+  };
+}
+
+function binCmp() {
+  const val = {
+    path: e => e.path.toLowerCase(),
+    bytes: e => e.bytes_disk,
+    files: e => e.n_files || 0,
+    mtime: e => e.mtime || 0,
+  }[BINSORT.k];
+  const s = BINSORT.desc ? -1 : 1;
+  return (a, b) => {
+    const x = val(a.e), y = val(b.e);
+    return (x < y ? -1 : x > y ? 1 : 0) * s;
+  };
+}
+
+function binStatus(e, covered) {
+  return e.guard
+    ? '<span class="tag empty">refused: ' + esc(e.guard) + "</span>"
+    : covered
+      ? '<span class="tag">goes with its parent</span>'
+      : e.src === "missing"
+        ? '<span class="tag">not in snapshot - size unknown</span>'
+        : '<span class="tag regen">will recycle</span>';
+}
+
+function binRowsHTML() {
+  const max = Math.max(...BIN_TREE.roots.map(n => n.e.bytes_disk), 1);
+  let out = "";
+  const emit = (n, depth) => {
+    const e = n.e, a = age(e.mtime);
+    // data-row lets the poller paint live per-path status into .rowst
+    // without re-rendering the table.
+    out += '<tr data-row="' + esc(e.path) + '"' +
+        (depth ? ' class="covsub"' : "") + ">" +
+      '<td class="name"' +
+        (depth ? ' style="padding-left:' + (8 + depth * 18) + 'px"' : "") +
+        ">" + esc(e.path) +
+        (n.kids.length
+          ? ' <span class="tag">+' + n.kids.length +
+            " mark" + (n.kids.length === 1 ? "" : "s") + " inside</span>"
+          : "") +
+        (e.cloud_only ? ' <span class="tag cloud">cloud only - frees quota, not disk</span>' : "") +
+        (e.bytes_cloud ? ' <span class="tag cloud">' + size(e.bytes_cloud) + " cloud inside</span>" : "") +
+      "</td>" +
+      barCell(e.bytes_disk, max) +
+      '<td class="num">' + (e.n_files > 1 ? e.n_files.toLocaleString() : "") + "</td>" +
+      '<td class="num ' + a.cls + '">' + a.text + "</td>" +
+      '<td class="rowst">' + binStatus(e, depth > 0) + "</td>" +
+      "<td>" + revealBtn(e.path) +
+        ' <a href="#" data-unmark="' + esc(e.path) + '">unmark</a></td></tr>';
+    for (const k of n.kids.slice().sort(binCmp())) emit(k, depth + 1);
+  };
+  for (const n of BIN_TREE.roots.slice().sort(binCmp())) emit(n, 0);
+  return out;
+}
+
+function binHeadHTML() {
+  const th = (label, key) =>
+    '<th class="sortable' + (key === "path" ? "" : " num") +
+    '" data-binsort="' + key + '">' + label +
+    (BINSORT.k === key ? (BINSORT.desc ? " ▾" : " ▴") : "") + "</th>";
+  return "<tr>" + th("Path", "path") + th("On disk", "bytes") +
+    th("Files", "files") + th("Modified", "mtime") +
+    "<th>Status</th><th></th></tr>";
+}
+
 function binBody() {
   const d = RECO.plan, st = RECO.st || {};
   const bst = st.batch || {}, ebs = st.emptybin || {}, rst = st.refresh || {},
@@ -1837,30 +1967,7 @@ function binBody() {
   const anyRunning = bst.running || ebs.running || rst.running ||
                      rst.reloading || sst.running;
   const ss = stepStates(st);
-
-  const status = e => e.guard
-    ? '<span class="tag empty">refused: ' + esc(e.guard) + "</span>"
-    : e.src === "missing"
-      ? '<span class="tag">not in snapshot - size unknown</span>'
-      : '<span class="tag regen">will recycle</span>';
-
-  const max = Math.max(...d.entries.map(x => x.bytes_disk), 1);
-  const erows = d.entries.map(e => {
-    const a = age(e.mtime);
-    // data-row lets the poller paint live per-path status into .rowst
-    // without re-rendering the table.
-    return '<tr data-row="' + esc(e.path) + '">' +
-      '<td class="name">' + esc(e.path) +
-        (e.cloud_only ? ' <span class="tag cloud">cloud only - frees quota, not disk</span>' : "") +
-        (e.bytes_cloud ? ' <span class="tag cloud">' + size(e.bytes_cloud) + " cloud inside</span>" : "") +
-      "</td>" +
-      barCell(e.bytes_disk, max) +
-      '<td class="num">' + (e.n_files > 1 ? e.n_files.toLocaleString() : "") + "</td>" +
-      '<td class="num ' + a.cls + '">' + a.text + "</td>" +
-      '<td class="rowst">' + status(e) + "</td>" +
-      "<td>" + revealBtn(e.path) +
-        ' <a href="#" data-unmark="' + esc(e.path) + '">unmark</a></td></tr>';
-  }).join("");
+  BIN_TREE = binTree(d.entries);
 
   const last = LAST_BATCH
     ? '<h3 class="step">Last run: ' + esc(LAST_BATCH.batch || "not run") +
@@ -1887,7 +1994,7 @@ function binBody() {
 
   return '<div class="cards">' +
       card(d.entries.length.toLocaleString(), "marked for the Recycle Bin") +
-      card(size(d.total_disk), "would free on disk") +
+      card(size(BIN_TREE.unique), "would free on disk") +
       card(refused.length.toLocaleString(), "refused by the guard") +
       card(size(d.bin.bytes), "in the Recycle Bin") +
     "</div>" +
@@ -1907,7 +2014,15 @@ function binBody() {
     stepCard("send", ss.send,
       "Step 1 &middot; Send the marked items to the Recycle Bin",
       (d.entries.length
-        ? table(["Path", "On disk", "Files", "Modified", "Status", ""], erows)
+        ? (BIN_TREE.covered
+            ? '<p class="hint">' + BIN_TREE.covered.toLocaleString() +
+              " mark" + (BIN_TREE.covered === 1 ? "" : "s") +
+              " sit inside a marked folder - shown dimmed below. They go " +
+              "along when the folder does, so they are not separate moves " +
+              "and their bytes are counted once.</p>"
+            : "") +
+          '<table id="bintable"><thead>' + binHeadHTML() +
+            "</thead><tbody>" + binRowsHTML() + "</tbody></table>"
         : '<p class="hint">Nothing is marked yet - tick rows in any ' +
           '<a href="#" data-focus="">review list</a> and apply them, and ' +
           "they show up here.</p>") +
@@ -1917,8 +2032,15 @@ function binBody() {
           ">send to the Recycle Bin</button>" +
         '<span class="path">' +
           (d.can_run
-            ? d.actionable + " item" + (d.actionable === 1 ? "" : "s") +
-              ", " + size(d.total_disk) + " - reversible, logged to a manifest"
+            ? BIN_TREE.roots.length.toLocaleString() + " item" +
+              (BIN_TREE.roots.length === 1 ? "" : "s") + " will move, " +
+              size(BIN_TREE.unique) +
+              (BIN_TREE.covered
+                ? " (" + BIN_TREE.covered.toLocaleString() +
+                  " covered mark" + (BIN_TREE.covered === 1 ? "" : "s") +
+                  " go along)"
+                : "") +
+              " - reversible, logged to a manifest"
             : refused.length
               ? "blocked - unmark the refused rows first"
               : "nothing marked") +
@@ -2076,13 +2198,13 @@ function keptBody() {
 
   return (nDel
       ? '<p class="hint">' + nDel.toLocaleString() +
-        ' item(s) are marked for recycling - they are listed under ' +
+        ' item(s) are marked for the Recycle Bin - they are listed under ' +
         '<a href="#" data-focus="bin">Marked for the Recycle Bin</a>.</p>'
       : "") +
-    section("Keep", "keep",
-            "Nothing yet - tick rows in a review list and apply 'keep " +
-            "checked'.") +
-    section("Unsure", "unsure",
+    section("Marked to keep", "keep",
+            "Nothing yet - tick rows in a review list and apply 'mark " +
+            "checked to keep'.") +
+    section("Marked unsure", "unsure",
             "Rows you looked at and put aside land here.");
 }
 
@@ -2406,6 +2528,24 @@ document.addEventListener("click", e => {
   if (sa) {
     e.preventDefault();
     selAction(sa.dataset.selact);
+    return;
+  }
+
+  // Sortable column header on the marked-items table: click toggles the key
+  // (or flips direction on a repeat click) and only the table repaints.
+  const bs = e.target.closest("[data-binsort]");
+  if (bs) {
+    e.preventDefault();
+    if (!BIN_TREE) return;
+    const k = bs.dataset.binsort;
+    if (BINSORT.k === k) BINSORT.desc = !BINSORT.desc;
+    else { BINSORT.k = k; BINSORT.desc = k !== "path"; }
+    const thead = document.querySelector("#bintable thead");
+    const tbody = document.querySelector("#bintable tbody");
+    if (thead && tbody) {
+      thead.innerHTML = binHeadHTML();
+      tbody.innerHTML = binRowsHTML();
+    }
     return;
   }
 

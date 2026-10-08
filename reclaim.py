@@ -338,16 +338,21 @@ def _path_size(db, sid, path):
                     (r[0], r[1], r[2], r[3], r[4], r[5], r[6])))
 
 
-def propose(db, sid):
+def propose(db, sid, only=None):
     """The batch the current 'delete' marks imply, with per-path verdicts.
 
     Marks whose path is already gone are consumed here, not listed: the
     mark's intent (the file is gone) is already met, and leaving it would
     block every later batch behind an unmark chore. The viewer surfaces the
-    count via `pruned`."""
+    count via `pruned`.
+
+    `only` scopes the plan to an exact set of paths - the self-test uses it
+    so a scratch mark never sweeps up real decisions."""
     marks = db.execute(
         "SELECT path, decided_at FROM decisions WHERE choice='delete'"
         " ORDER BY decided_at").fetchall()
+    if only is not None:
+        marks = [m for m in marks if m[0] in only]
     running = None
     entries = []
     for path, at in marks:
@@ -391,7 +396,7 @@ def covering_parents(paths):
     return [orig[n] for n in out]
 
 
-def run_batch(db, sid, data_dir=DATA_DIR, progress=None):
+def run_batch(db, sid, data_dir=DATA_DIR, progress=None, only=None):
     """Send every 'delete' mark to the Recycle Bin. Manifest first, always.
 
     Aborts before touching anything if any marked path is refused by the
@@ -402,8 +407,12 @@ def run_batch(db, sid, data_dir=DATA_DIR, progress=None):
     "i":, "n":, "err":}. A path inside a directory already recycled by this
     batch reports "covered" instead of failing on file-not-found - it left
     the disk with its parent and restores with it.
+
+    `only` scopes the batch to an exact set of paths. The self-test must
+    pass it - unscoped, run_batch recycles every delete mark in the
+    database, which once swept a real 95-mark batch into a self-test.
     """
-    plan = propose(db, sid)
+    plan = propose(db, sid, only=only)
     # propose already consumed marks whose paths are gone; the check stays as
     # a second line because the set can change between the two calls.
     if not plan["actionable"]:
@@ -486,33 +495,45 @@ def run_batch(db, sid, data_dir=DATA_DIR, progress=None):
 
 
 def restore_manifest(mpath):
-    """Put back every recycled entry a manifest recorded."""
-    out = []
+    """Put back every recycled entry a manifest recorded.
+
+    Order matters: restore parents before descendants. A child's restore
+    recreates its ancestor dirs, so a child-first pass recreates a marked
+    parent path and the parent's own restore then dies on "target already
+    exists" with its $R stranded in the bin. Covered entries are checked
+    last of all - whether they are back is only decidable once every real
+    bin entry has been put back.
+    """
+    recs = []
     with open(mpath, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
-            if rec.get("action") != "recycle" or not rec.get("ok"):
-                continue
-            # A "covered" entry went to the bin inside its recycled parent -
-            # it has no $I/$R pair of its own and comes back with the parent.
-            if rec.get("covered_by"):
-                back = os.path.lexists(win(rec["path"]))
-                out.append({"path": rec["path"], "restored": back,
-                            "error": None if back else
-                                     "its parent did not restore it"})
-                continue
-            ipath, rpath = rec.get("bin_i"), rec.get("bin_r")
-            try:
-                if not ipath or not os.path.exists(win(ipath)):
-                    raise OSError("no $I entry left in the bin (bin emptied?)")
-                restore_pair(rec["path"], ipath, rpath, rec.get("attrs"))
-                out.append({"path": rec["path"], "restored": True})
-            except OSError as exc:
-                out.append({"path": rec["path"], "restored": False,
-                            "error": str(exc)})
+            if rec.get("action") == "recycle" and rec.get("ok"):
+                recs.append(rec)
+    recs.sort(key=lambda r: (bool(r.get("covered_by")),
+                             r["path"].count("\\"), len(r["path"])))
+    out = []
+    for rec in recs:
+        # A "covered" entry went to the bin inside its recycled parent -
+        # it has no $I/$R pair of its own and comes back with the parent.
+        if rec.get("covered_by"):
+            back = os.path.lexists(win(rec["path"]))
+            out.append({"path": rec["path"], "restored": back,
+                        "error": None if back else
+                                 "its parent did not restore it"})
+            continue
+        ipath, rpath = rec.get("bin_i"), rec.get("bin_r")
+        try:
+            if not ipath or not os.path.exists(win(ipath)):
+                raise OSError("no $I entry left in the bin (bin emptied?)")
+            restore_pair(rec["path"], ipath, rpath, rec.get("attrs"))
+            out.append({"path": rec["path"], "restored": True})
+        except OSError as exc:
+            out.append({"path": rec["path"], "restored": False,
+                        "error": str(exc)})
     return out
 
 
@@ -636,8 +657,14 @@ def self_test():
                    " choice='delete', decided_at=?",
                    (fa, "delete", time.time(), time.time()))
         db.commit()
-        res = run_batch(db, sid)
+        # `only` is mandatory here: an unscoped run_batch recycles every
+        # delete mark in the database, not just this scratch one.
+        res = run_batch(db, sid, only={fa})
         check("batch ran", res.get("ok"), res.get("error", ""))
+        check("batch touched only the scratch file",
+              res.get("results") and
+              all(r["path"] == fa for r in res["results"]),
+              "%d entries" % len(res.get("results") or []))
         check("manifest written", bool(res.get("manifest"))
               and os.path.exists(res["manifest"]))
         check("file in bin after batch", not os.path.exists(fa)

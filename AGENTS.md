@@ -206,6 +206,20 @@ use `;`.
     transactions: cache inserts commit in chunks, and the result swap
     (delete + insert) is one short transaction at the end. The same rule
     holds for any future long analysis pass that shares the database.
+20. **`reclaim.run_batch` is every 'delete' mark, not a fixture.** The
+    self-test once ran it unscoped and swept a real 95-mark batch into the
+    bin (fully restored - see `.agent_tasks/reclaim-space/STATE.md`,
+    2026-10-07 incident). `propose`/`run_batch` now take `only={paths}`;
+    tests must pass it. Second bug the incident exposed:
+    `restore_manifest` processed manifest order, so an individually-binned
+    child could restore before its marked parent and recreate that path -
+    the parent's restore then died on "target already exists" with its
+    `$R` stranded in the bin. Restores now sort parents-first (fewest
+    `\`), covered entries last. If a merge-restore is ever needed by hand
+    again: move the partial dir aside, `restore_pair` the `$R`, merge the
+    aside in (file sets are disjoint), then remove the shell - OneDrive-
+    scope dirs may refuse `rmdir` (errors 5/123) until moved out of the
+    synced tree and the READONLY bit is cleared.
 
 ## Running things
 
