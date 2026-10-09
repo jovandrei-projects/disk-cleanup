@@ -160,8 +160,10 @@ function assertRendered(name, mustContain) {
        "Empty the Windows Recycle Bin",
        "id=\"runbatch\"", "id=\"emptybin\"",
        "id=\"pipestatus\"", "id=\"oplog\"", "stepc",
-       // sortable header + the covered-mark tree under a marked folder
-       "data-binsort", "goes with its parent"]);
+       // sortable header; the covered-mark tree under a marked folder
+       // ("goes with its parent") only renders when the current batch has a
+       // mark nested inside another, so it is data-dependent - not asserted
+       "data-binsort"]);
     app.setFocus({ t: "rescan" });
     app.drawReco();
     assertRendered("recommended focus: rescan",

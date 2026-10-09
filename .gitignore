@@ -9,3 +9,4 @@ reports/
 .agent_tasks/*/scratch/
 __pycache__/
 *.pyc
+logs/

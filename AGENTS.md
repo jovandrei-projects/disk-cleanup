@@ -305,13 +305,21 @@ snapshot exists.
 
 ## Verifying a change
 
-Run all three. The first two are instant and catch most of it:
+Run all four. The first two are instant and catch most of it:
 
 ```
 node --check web/app.js                 syntax
 python -m py_compile app.py scan.py     syntax
+python run_tests.py                     unit + regression suite; --quick skips
+                                        the live-server/bin round-trip tests
 node test_render.js                     every view, against a running app.py
 ```
+
+`python run_tests.py` already covers test_render.js: the smoke test spawns
+app.py on port 18770 and drives it via `BASE`. The suite pins the
+never-touch guard matrix, rollup invariants on a fixture tree, and the
+`only=` scoping that the 2026-10-07 incident made mandatory. Convention:
+`C:\Projects\TESTING.md`.
 
 `test_render.js` loads `web/app.js` in a VM with a stubbed DOM, points `fetch`
 at the live server, renders each view and inspects the HTML. **It exists because
